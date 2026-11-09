@@ -1,0 +1,37 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# Next.js Build Output & Cache
+/.next/
+/out/
+.swc/
+
+# TypeScript Cache
+*.tsbuildinfo
+next-env.d.ts.bak
+
+# Environment Variables & Secrets
+.env
+.env*.local
+
+# Debug Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# System Files (Windows & Mac)
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+.DS_Store
+
+# Editor Settings (Optional)
+.vscode/*
+!.vscode/extensions.json
+.idea/
