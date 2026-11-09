@@ -150,33 +150,129 @@ export default function StaffDashboardPage() {
   };
 
   // --- MERGE DUPLICATE PLAYER INTO TARGET PLAYER ---
+  // --- MERGE DUPLICATE PLAYER INTO TARGET PLAYER ---
   const handleMergePlayers = async () => {
     if (!duplicateId || !targetId || duplicateId === targetId) return;
     setPlayerMsg(null);
 
-    await supabase
-      .from('tournament_entries')
-      .update({ player1_id: targetId })
-      .eq('player1_id', duplicateId);
-    await supabase
-      .from('tournament_entries')
-      .update({ player2_id: targetId })
-      .eq('player2_id', duplicateId);
-    await supabase
-      .from('rating_logs')
-      .update({ player_id: targetId })
-      .eq('player_id', duplicateId);
+    try {
+      const dupPlayer = players.find((p) => p.id === duplicateId);
+      const targetPlayer = players.find((p) => p.id === targetId);
+      if (!dupPlayer || !targetPlayer) return;
 
-    const { error } = await supabase.from('players').delete().eq('id', duplicateId);
-    if (error) {
-      setPlayerMsg(`Ошибка объединения: ${error.message}`);
-      return;
+      // 1. Fetch all tournament entries involving either the duplicate or target player
+      const { data: allEntries, error: fetchErr } = await supabase
+        .from('tournament_entries')
+        .select('*')
+        .or(
+          `player1_id.eq.${duplicateId},player2_id.eq.${duplicateId},player1_id.eq.${targetId},player2_id.eq.${targetId}`
+        );
+
+      if (fetchErr) throw new Error(fetchErr.message);
+
+      const entriesList = allEntries || [];
+
+      // 2. Handle entries where duplicateId is player1_id
+      const dupAsPlayer1 = entriesList.filter((e) => e.player1_id === duplicateId);
+
+      for (const dupEntry of dupAsPlayer1) {
+        // Check if targetId already has an entry as player1 in this exact tournament
+        const existingTargetEntry = entriesList.find(
+          (e) =>
+            e.tournament_id === dupEntry.tournament_id &&
+            e.player1_id === targetId &&
+            e.id !== dupEntry.id
+        );
+
+        if (existingTargetEntry) {
+          // Both profiles registered in the same tournament!
+          // Re-point any matches from dupEntry.id to existingTargetEntry.id, then delete dupEntry
+          await supabase
+            .from('matches')
+            .update({ entry1_id: existingTargetEntry.id })
+            .eq('entry1_id', dupEntry.id);
+          await supabase
+            .from('matches')
+            .update({ entry2_id: existingTargetEntry.id })
+            .eq('entry2_id', dupEntry.id);
+          await supabase
+            .from('matches')
+            .update({ winner_entry_id: existingTargetEntry.id })
+            .eq('winner_entry_id', dupEntry.id);
+
+          const { error: delEntryErr } = await supabase
+            .from('tournament_entries')
+            .delete()
+            .eq('id', dupEntry.id);
+          if (delEntryErr) throw new Error(delEntryErr.message);
+        } else if (dupEntry.player2_id === targetId) {
+          // Edge case: duplicate was partnered with targetId in Doubles (cannot partner with oneself)
+          const { error: selfErr } = await supabase
+            .from('tournament_entries')
+            .update({ player1_id: targetId, player2_id: null })
+            .eq('id', dupEntry.id);
+          if (selfErr) throw new Error(selfErr.message);
+        } else {
+          // Safe to transfer ownership of the entry to targetId
+          const { error: updErr } = await supabase
+            .from('tournament_entries')
+            .update({ player1_id: targetId })
+            .eq('id', dupEntry.id);
+          if (updErr) throw new Error(updErr.message);
+        }
+      }
+
+      // 3. Handle Doubles entries where duplicateId is player2_id
+      const dupAsPlayer2 = entriesList.filter((e) => e.player2_id === duplicateId);
+
+      for (const dupEntry of dupAsPlayer2) {
+        if (dupEntry.player1_id === targetId) {
+          // Prevent partnering with oneself (different_partners constraint)
+          const { error: p2SelfErr } = await supabase
+            .from('tournament_entries')
+            .update({ player2_id: null })
+            .eq('id', dupEntry.id);
+          if (p2SelfErr) throw new Error(p2SelfErr.message);
+        } else {
+          const { error: p2UpdErr } = await supabase
+            .from('tournament_entries')
+            .update({ player2_id: targetId })
+            .eq('id', dupEntry.id);
+          if (p2UpdErr) throw new Error(p2UpdErr.message);
+        }
+      }
+
+      // 4. Move rating_logs and combine W/L stats onto the target player
+      await supabase
+        .from('rating_logs')
+        .update({ player_id: targetId })
+        .eq('player_id', duplicateId);
+
+      await supabase
+        .from('players')
+        .update({
+          wins: targetPlayer.wins + dupPlayer.wins,
+          losses: targetPlayer.losses + dupPlayer.losses,
+        })
+        .eq('id', targetId);
+
+      // 5. Now zero tournament_entries point to duplicateId, so DELETE succeeds cleanly
+      const { error: deletePlayerErr } = await supabase
+        .from('players')
+        .delete()
+        .eq('id', duplicateId);
+
+      if (deletePlayerErr) throw new Error(deletePlayerErr.message);
+
+      setDuplicateId('');
+      setTargetId('');
+      setPlayerMsg('✓ Дубликат успешно объединён с основным профилем!');
+      fetchPlayers();
+    } catch (err: unknown) {
+      setPlayerMsg(
+        `Ошибка объединения: ${err instanceof Error ? err.message : 'Unknown error'}`
+      );
     }
-
-    setDuplicateId('');
-    setTargetId('');
-    setPlayerMsg('✓ Дубликат успешно объединён с основным профилем!');
-    fetchPlayers();
   };
 
   return (
