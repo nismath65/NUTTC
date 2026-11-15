@@ -3,6 +3,12 @@
 import React, { useState } from 'react';
 import { Search, UserPlus, ArrowLeft, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import {
+  DEFAULT_SKILL_LEVEL,
+  getInitialEloForLevel,
+  PlayerSkillLevel,
+  SKILL_LEVEL_OPTIONS,
+} from '@/lib/playerLevels';
 import { Player, PlayerCategory } from '@/types/database';
 import { useLanguage } from './LanguageProvider';
 
@@ -28,6 +34,7 @@ export default function PlayerPicker({
   const [newName, setNewName] = useState('');
   const [newUniId, setNewUniId] = useState('');
   const [newCategory, setNewCategory] = useState<PlayerCategory>('student');
+  const [newLevel, setNewLevel] = useState<PlayerSkillLevel>(DEFAULT_SKILL_LEVEL);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const filteredPlayers = players.filter((p) => {
@@ -49,7 +56,7 @@ export default function PlayerPicker({
         full_name: newName.trim(),
         university_id: newUniId.trim() || null,
         category: newCategory,
-        elo_rating: 1000,
+        elo_rating: getInitialEloForLevel(newLevel),
       })
       .select()
       .single();
@@ -65,6 +72,7 @@ export default function PlayerPicker({
     setIsCreatingNew(false);
     setNewName('');
     setNewUniId('');
+    setNewLevel(DEFAULT_SKILL_LEVEL);
   };
 
   return (
@@ -183,6 +191,23 @@ export default function PlayerPicker({
               <option value="staff">{t.Staff.categories.staff}</option>
               <option value="professor">{t.Staff.categories.professor}</option>
               <option value="guest">{t.Staff.categories.guest}</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+              {t.Staff.skillLevel}
+            </label>
+            <select
+              value={newLevel}
+              onChange={(e) => setNewLevel(e.target.value as PlayerSkillLevel)}
+              className="w-full border border-[#E3DED2] rounded-lg px-2.5 py-1.5 text-sm bg-white"
+            >
+              {SKILL_LEVEL_OPTIONS.map((lvl) => (
+                <option key={lvl} value={lvl}>
+                  {t.Staff.levels[lvl]}
+                </option>
+              ))}
             </select>
           </div>
 

@@ -50,6 +50,13 @@
       "professor": "Профессор",
       "guest": "Гость / Выпускник"
     },
+    "skillLevel": "Уровень игры",
+    "levels": {
+      "beginner": "Новичок / Beginner (800)",
+      "amateur": "Любитель / Amateur (1000)",
+      "intermediate": "Средний / Intermediate (1200)",
+      "advanced": "Продвинутый / Advanced (1400)"
+    },
     "initialElo": "Начальный Эло",
     "addPlayerBtn": "Добавить игрока",
     "updateEloBtn": "Сохранить Эло"
@@ -95,7 +102,7 @@
     "allTablesBusy": "Все столы заняты",
     "registrationTitle": "Регистрация участников",
     "csvImportTitle": "📥 Импорт из Google Forms (CSV)",
-    "csvPlaceholder": "Формат строк: ФИО, University ID, student/staff/professor\nАлихан Бокейханов, 20230001, student\nАхмет Байтурсынов, , professor",
+    "csvPlaceholder": "Формат строк: ФИО, University ID, student/staff/professor, beginner/amateur/intermediate/advanced\nАлихан Бокейханов, 20230001, student, intermediate\nАхмет Байтурсынов, , professor, advanced",
     "csvImportBtn": "Импортировать список",
     "player1": "Игрок 1",
     "player2": "Игрок 2 (Напарник)",

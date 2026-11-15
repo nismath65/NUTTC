@@ -4,6 +4,12 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Plus, UserPlus, GitMerge, Search, ShieldAlert, Check } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import {
+  DEFAULT_SKILL_LEVEL,
+  getInitialEloForLevel,
+  PlayerSkillLevel,
+  SKILL_LEVEL_OPTIONS,
+} from '@/lib/playerLevels';
 import { useLanguage } from '@/components/LanguageProvider';
 import { useAuth } from '@/components/AuthProvider';
 import { Player, PlayerCategory, MatchType, StageFormat } from '@/types/database';
@@ -25,7 +31,8 @@ export default function StaffDashboardPage() {
   const [fullName, setFullName] = useState('');
   const [universityId, setUniversityId] = useState('');
   const [category, setCategory] = useState<PlayerCategory>('student');
-  const [initialElo, setInitialElo] = useState<number>(1000);
+  const [skillLevel, setSkillLevel] = useState<PlayerSkillLevel>(DEFAULT_SKILL_LEVEL);
+  const [initialElo, setInitialElo] = useState<number>(getInitialEloForLevel(DEFAULT_SKILL_LEVEL));
   const [eloEdits, setEloEdits] = useState<Record<string, number>>({});
   const [playerMsg, setPlayerMsg] = useState<string | null>(null);
 
@@ -130,7 +137,8 @@ export default function StaffDashboardPage() {
 
     setFullName('');
     setUniversityId('');
-    setInitialElo(1000);
+    setSkillLevel(DEFAULT_SKILL_LEVEL);
+    setInitialElo(getInitialEloForLevel(DEFAULT_SKILL_LEVEL));
     setPlayerMsg('✓ Игрок добавлен!');
     fetchPlayers();
   };
@@ -404,8 +412,8 @@ export default function StaffDashboardPage() {
           </span>
         </div>
 
-        <form onSubmit={handleAddPlayer} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
-          <div>
+        <form onSubmit={handleAddPlayer} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
+          <div className="lg:col-span-2">
             <label className="block text-xs font-semibold text-[#53605A] mb-1.5">
               {t.Staff.fullName}
             </label>
@@ -443,6 +451,27 @@ export default function StaffDashboardPage() {
               <option value="staff">{t.Staff.categories.staff}</option>
               <option value="professor">{t.Staff.categories.professor}</option>
               <option value="guest">{t.Staff.categories.guest}</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-[#53605A] mb-1.5">
+              {t.Staff.skillLevel}
+            </label>
+            <select
+              value={skillLevel}
+              onChange={(e) => {
+                const lvl = e.target.value as PlayerSkillLevel;
+                setSkillLevel(lvl);
+                setInitialElo(getInitialEloForLevel(lvl));
+              }}
+              className="w-full border border-[#E3DED2] bg-[#FAF8F4] rounded-lg px-3 py-2 text-sm"
+            >
+              {SKILL_LEVEL_OPTIONS.map((lvl) => (
+                <option key={lvl} value={lvl}>
+                  {t.Staff.levels[lvl]}
+                </option>
+              ))}
             </select>
           </div>
 

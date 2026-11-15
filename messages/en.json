@@ -50,6 +50,13 @@
       "professor": "Professor",
       "guest": "Guest / Alumni"
     },
+    "skillLevel": "Skill Level",
+    "levels": {
+      "beginner": "Beginner (800)",
+      "amateur": "Amateur (1000)",
+      "intermediate": "Intermediate (1200)",
+      "advanced": "Advanced (1400)"
+    },
     "initialElo": "Initial Elo",
     "addPlayerBtn": "Add Player",
     "updateEloBtn": "Save Elo"
@@ -95,7 +102,7 @@
     "allTablesBusy": "All tables occupied",
     "registrationTitle": "Participant Registration",
     "csvImportTitle": "📥 Import from Google Forms (CSV)",
-    "csvPlaceholder": "Format per line: Full Name, University ID, student/staff/professor\nAlikhan Bokeikhanov, 20230001, student\nAkhmet Baitursynov, , professor",
+    "csvPlaceholder": "Format per line: Full Name, University ID, student/staff/professor, beginner/amateur/intermediate/advanced\nAlikhan Bokeikhanov, 20230001, student, intermediate\nAkhmet Baitursynov, , professor, advanced",
     "csvImportBtn": "Import List",
     "player1": "Player 1",
     "player2": "Player 2 (Partner)",

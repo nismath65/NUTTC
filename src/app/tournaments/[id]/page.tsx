@@ -43,12 +43,12 @@ import {
   findStageIntegrityIssues,
   SeedingMode,
 } from '@/lib/tournamentEngine';
+import { parseCsvParticipantLine } from '@/lib/playerLevels';
 import {
   Tournament,
   TournamentStage,
   TournamentEntry,
   Player,
-  PlayerCategory,
   Match,
   TournamentStatus,
   StageFormat,
@@ -578,40 +578,38 @@ export default function TournamentDetailPage() {
         .map((l) => l.trim())
         .filter(Boolean);
 
+      const knownPlayers = [...allPlayers];
       const seenIds = new Set(registeredPlayerIds);
       let importedCount = 0;
       let skippedDuplicates = 0;
 
       for (const line of lines) {
-        const parts = line.split(',').map((p) => p.trim());
-        const name = parts[0];
-        const uniId = parts[1] || null;
-        const rawCat = (parts[2] || 'student').toLowerCase();
-        const cat: PlayerCategory =
-          rawCat === 'professor' || rawCat === 'staff' || rawCat === 'guest'
-            ? (rawCat as PlayerCategory)
-            : 'student';
+        const parsed = parseCsvParticipantLine(line);
+        if (!parsed) continue;
 
-        if (!name) continue;
-
-        let playerRecord = allPlayers.find(
+        let playerRecord = knownPlayers.find(
           (p) =>
-            (uniId && p.university_id === uniId) ||
-            p.full_name.toLowerCase() === name.toLowerCase()
+            (parsed.universityId && p.university_id === parsed.universityId) ||
+            p.full_name.toLowerCase() === parsed.fullName.toLowerCase()
         );
 
+        // New players get starting Elo from their declared skill level;
+        // existing players keep their earned club Elo rating.
         if (!playerRecord) {
           const { data: created } = await supabase
             .from('players')
             .insert({
-              full_name: name,
-              university_id: uniId,
-              category: cat,
-              elo_rating: 1000,
+              full_name: parsed.fullName,
+              university_id: parsed.universityId,
+              category: parsed.category,
+              elo_rating: parsed.initialElo,
             })
             .select()
             .single();
-          if (created) playerRecord = created as Player;
+          if (created) {
+            playerRecord = created as Player;
+            knownPlayers.push(playerRecord);
+          }
         }
 
         if (playerRecord) {
@@ -1873,6 +1871,11 @@ export default function TournamentDetailPage() {
 
           {showCsvImport && isJuryMode && (
             <div className="bg-[#FAF8F4] border border-[#E3DED2] rounded-xl p-4 space-y-3">
+              <p className="text-[11px] text-[#53605A]">
+                {locale === 'ru'
+                  ? 'Уровень задаёт стартовый Эло для новых игроков: beginner = 800 · amateur = 1000 · intermediate = 1200 · advanced = 1400 (у существующих рейтинг сохраняется).'
+                  : 'Level sets starting Elo for new players: beginner = 800 · amateur = 1000 · intermediate = 1200 · advanced = 1400 (existing players keep their earned Elo).'}
+              </p>
               <textarea
                 rows={4}
                 value={csvText}
