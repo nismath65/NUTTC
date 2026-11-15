@@ -1,11 +1,35 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams } from 'next/navigation';
+import {
+  Download,
+  Unlock,
+  Eye,
+  FlaskConical,
+  Pencil,
+  ArrowLeftRight,
+  Lock,
+  Zap,
+  Plus,
+  Flag,
+  AlertTriangle,
+  RotateCcw,
+  Check,
+  X,
+  Trash2,
+  Search,
+  PanelRightClose,
+  PanelRightOpen,
+  Trophy,
+  FileSpreadsheet,
+  CircleDot,
+} from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useLanguage } from '@/components/LanguageProvider';
 import { useAuth } from '@/components/AuthProvider';
 import PlayerPicker from '@/components/PlayerPicker';
+import BracketView from '@/components/BracketView';
 import {
   generateStageDraw,
   generateNextSwissRound,
@@ -16,6 +40,7 @@ import {
   createAndAdvanceToStage2,
   computeStageStandings,
   completeTournamentAndAssignMedals,
+  findStageIntegrityIssues,
   SeedingMode,
 } from '@/lib/tournamentEngine';
 import {
@@ -51,8 +76,18 @@ export default function TournamentDetailPage() {
   const [showSidebar, setShowSidebar] = useState(true);
   const [fastTestMode, setFastTestMode] = useState(true);
   const [manualSlotEditMode, setManualSlotEditMode] = useState(false);
+  const [showSwapBar, setShowSwapBar] = useState(false);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [csvText, setCsvText] = useState('');
+  const [participantSearch, setParticipantSearch] = useState('');
+
+  // Concurrency / double-click guards
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [busyMatchId, setBusyMatchId] = useState<string | null>(null);
+  const [confirmRedraw, setConfirmRedraw] = useState(false);
+  const actionLockRef = useRef(false);
+  const loadSeqRef = useRef(0);
+  const realtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Seeding & Swap Controls
   const [seedingMode, setSeedingMode] = useState<SeedingMode>('elo');
@@ -75,23 +110,40 @@ export default function TournamentDetailPage() {
     4: 2,
   });
   const [stage2Format, setStage2Format] = useState<StageFormat>('single_elimination');
-  const [engineMsg, setEngineMsg] = useState<string | null>(null);
+  const [engineMsg, setEngineMsg] = useState<{ text: string; isError?: boolean } | null>(null);
 
   const loadTournamentData = useCallback(async () => {
     if (!id) return;
+    const seq = ++loadSeqRef.current;
 
-    const { data: tData } = await supabase
-      .from('tournaments')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const [{ data: tData }, { data: sData }, { data: eData }, { data: mData }, { data: pData }] =
+      await Promise.all([
+        supabase.from('tournaments').select('*').eq('id', id).single(),
+        supabase
+          .from('tournament_stages')
+          .select('*')
+          .eq('tournament_id', id)
+          .order('stage_order', { ascending: true }),
+        supabase
+          .from('tournament_entries')
+          .select('*, player1:players!player1_id(*), player2:players!player2_id(*)')
+          .eq('tournament_id', id)
+          .order('seed_number', { ascending: true, nullsFirst: false })
+          .order('seed_elo', { ascending: false }),
+        supabase
+          .from('matches')
+          .select('*')
+          .eq('tournament_id', id)
+          .order('round_number', { ascending: true })
+          .order('match_number', { ascending: true }),
+        supabase.from('players').select('*').order('full_name', { ascending: true }),
+      ]);
+
+    // Ignore stale out-of-order responses
+    if (seq !== loadSeqRef.current) return;
+
     if (tData) setTournament(tData as Tournament);
 
-    const { data: sData } = await supabase
-      .from('tournament_stages')
-      .select('*')
-      .eq('tournament_id', id)
-      .order('stage_order', { ascending: true });
     const loadedStages = (sData as TournamentStage[]) || [];
     setStages(loadedStages);
     setActiveStageId((prev) =>
@@ -100,13 +152,6 @@ export default function TournamentDetailPage() {
         : loadedStages[loadedStages.length - 1]?.id || null
     );
 
-    const { data: eData } = await supabase
-      .from('tournament_entries')
-      .select('*, player1:players!player1_id(*), player2:players!player2_id(*)')
-      .eq('tournament_id', id)
-      .order('seed_number', { ascending: true, nullsFirst: false })
-      .order('seed_elo', { ascending: false });
-
     const loadedEntries = (eData as TournamentEntry[]) || [];
     setEntries(loadedEntries);
 
@@ -114,13 +159,6 @@ export default function TournamentDetailPage() {
     loadedEntries.forEach((e) => {
       entryMap[e.id] = e;
     });
-
-    const { data: mData } = await supabase
-      .from('matches')
-      .select('*')
-      .eq('tournament_id', id)
-      .order('round_number', { ascending: true })
-      .order('match_number', { ascending: true });
 
     if (mData) {
       const enriched: Match[] = (mData as Match[]).map((m) => ({
@@ -131,24 +169,27 @@ export default function TournamentDetailPage() {
       setMatches(enriched);
     }
 
-    const { data: pData } = await supabase
-      .from('players')
-      .select('*')
-      .order('full_name', { ascending: true });
     if (pData) setAllPlayers(pData as Player[]);
   }, [id]);
 
-  // Initial load + SUPABASE REALTIME SUBSCRIPTION
+  // Initial load + debounced SUPABASE REALTIME SUBSCRIPTION
   useEffect(() => {
     loadTournamentData();
 
     if (!id) return;
+    const scheduleReload = () => {
+      if (realtimeTimerRef.current) clearTimeout(realtimeTimerRef.current);
+      realtimeTimerRef.current = setTimeout(() => {
+        loadTournamentData();
+      }, 120);
+    };
+
     const channel = supabase
       .channel(`live-tournament-${id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'matches', filter: `tournament_id=eq.${id}` },
-        () => loadTournamentData()
+        scheduleReload
       )
       .on(
         'postgres_changes',
@@ -158,7 +199,7 @@ export default function TournamentDetailPage() {
           table: 'tournament_entries',
           filter: `tournament_id=eq.${id}`,
         },
-        () => loadTournamentData()
+        scheduleReload
       )
       .on(
         'postgres_changes',
@@ -168,14 +209,22 @@ export default function TournamentDetailPage() {
           table: 'tournament_stages',
           filter: `tournament_id=eq.${id}`,
         },
-        () => loadTournamentData()
+        scheduleReload
       )
       .subscribe();
 
     return () => {
+      if (realtimeTimerRef.current) clearTimeout(realtimeTimerRef.current);
       supabase.removeChannel(channel);
     };
   }, [id, loadTournamentData]);
+
+  // Auto-reset confirmation step after 4s
+  useEffect(() => {
+    if (!confirmRedraw) return;
+    const timer = setTimeout(() => setConfirmRedraw(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirmRedraw]);
 
   const formatEntryName = (entry?: TournamentEntry | null) => {
     if (!entry) return 'TBD';
@@ -206,6 +255,17 @@ export default function TournamentDetailPage() {
     () => entries.filter((e) => e.attendance === 'checked_in'),
     [entries]
   );
+
+  const integrityIssues = useMemo(() => {
+    if (!currentStage || stageMatches.length === 0) return [];
+    return findStageIntegrityIssues(stageMatches, currentStage.format);
+  }, [stageMatches, currentStage]);
+
+  const flaggedMatchIds = useMemo(() => {
+    const set = new Set<string>();
+    integrityIssues.forEach((issue) => issue.matchIds.forEach((mid) => set.add(mid)));
+    return set;
+  }, [integrityIssues]);
 
   const hasPlayedMatchesInStage = stageMatches.some((m) => m.status === 'completed');
   const isStageStructureLocked = hasPlayedMatchesInStage && !fastTestMode;
@@ -241,6 +301,15 @@ export default function TournamentDetailPage() {
     [entries]
   );
 
+  const registeredPlayerIds = useMemo(() => {
+    const ids = new Set<string>();
+    entries.forEach((e) => {
+      if (e.player1_id) ids.add(e.player1_id);
+      if (e.player2_id) ids.add(e.player2_id);
+    });
+    return ids;
+  }, [entries]);
+
   // --- HANDLERS ---
   const handleStatusChange = async (newStatus: TournamentStatus) => {
     if (!tournament) return;
@@ -254,9 +323,17 @@ export default function TournamentDetailPage() {
     setStages(stages.map((s) => (s.id === stageId ? { ...s, format: newFormat } : s)));
   };
 
-  const handleGenerateDraw = async () => {
-    setEngineMsg(null);
+  const runDrawGeneration = async (skipConfirm = false) => {
     if (!tournament || !currentStage) return;
+    if (!skipConfirm && stageMatches.length > 0 && !confirmRedraw) {
+      setConfirmRedraw(true);
+      return;
+    }
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
+    setBusyAction('draw');
+    setConfirmRedraw(false);
+    setEngineMsg(null);
     try {
       await generateStageDraw(
         tournament.id,
@@ -267,62 +344,111 @@ export default function TournamentDetailPage() {
         false,
         seedingMode
       );
-      setEngineMsg('✓ Сетка сформирована / Draw generated!');
-      loadTournamentData();
+      setEngineMsg({ text: '✓ Сетка сформирована / Draw generated!' });
+      await loadTournamentData();
     } catch (err: unknown) {
-      setEngineMsg(err instanceof Error ? err.message : 'Error');
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error',
+        isError: true,
+      });
+    } finally {
+      actionLockRef.current = false;
+      setBusyAction(null);
     }
   };
 
   const handleNextSwissRound = async () => {
+    if (!tournament || !currentStage || actionLockRef.current) return;
+    actionLockRef.current = true;
+    setBusyAction('swiss');
     setEngineMsg(null);
-    if (!tournament || !currentStage) return;
     try {
       await generateNextSwissRound(tournament.id, currentStage.id, checkedInEntries, matches);
-      loadTournamentData();
+      await loadTournamentData();
     } catch (err: unknown) {
-      setEngineMsg(err instanceof Error ? err.message : 'Error');
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error',
+        isError: true,
+      });
+    } finally {
+      actionLockRef.current = false;
+      setBusyAction(null);
     }
   };
 
   const handleQuickResult = async (match: Match, s1: number, s2: number) => {
-    setEngineMsg(null);
-    if (!tournament || !isJuryMode) return;
+    if (!tournament || !isJuryMode || busyMatchId === match.id) return;
     if (!fastTestMode && match.status !== 'in_progress' && match.status !== 'completed') {
-      setEngineMsg(t.TournamentDetail.safeModeHint);
+      setEngineMsg({ text: t.TournamentDetail.safeModeHint, isError: true });
       return;
     }
+    setEngineMsg(null);
+    setBusyMatchId(match.id);
     try {
       await submitMatchResult(match, s1, s2, tournament.best_of, tournament.is_rated);
-      loadTournamentData();
+      await loadTournamentData();
     } catch (err: unknown) {
-      setEngineMsg(err instanceof Error ? err.message : 'Error');
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error',
+        isError: true,
+      });
+    } finally {
+      setBusyMatchId(null);
     }
   };
 
   const handleUndoMatch = async (match: Match) => {
+    if (busyMatchId === match.id) return;
     setEngineMsg(null);
+    setBusyMatchId(match.id);
     try {
       await undoMatchResult(match);
-      setEngineMsg('↺ Результат матча отменён / Match result undone');
-      loadTournamentData();
+      setEngineMsg({ text: '↺ Результат матча отменён / Match result undone' });
+      await loadTournamentData();
     } catch (err: unknown) {
-      setEngineMsg(err instanceof Error ? err.message : 'Error undoing match');
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error undoing match',
+        isError: true,
+      });
+    } finally {
+      setBusyMatchId(null);
     }
   };
 
   const handleSwapPlayers = async () => {
     if (!currentStage || !swapEntryA || !swapEntryB || swapEntryA === swapEntryB) return;
-    await swapTwoEntriesInStage(currentStage.id, swapEntryA, swapEntryB);
-    setEngineMsg('⇄ Игроки поменялись местами / Players swapped!');
-    setSwapEntryA('');
-    setSwapEntryB('');
-    loadTournamentData();
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
+    setBusyAction('swap');
+    setEngineMsg(null);
+    try {
+      await swapTwoEntriesInStage(currentStage.id, swapEntryA, swapEntryB);
+      setEngineMsg({ text: '⇄ Игроки поменялись местами / Players swapped!' });
+      setSwapEntryA('');
+      setSwapEntryB('');
+      await loadTournamentData();
+    } catch (err: unknown) {
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error swapping players',
+        isError: true,
+      });
+    } finally {
+      actionLockRef.current = false;
+      setBusyAction(null);
+    }
   };
 
   const handleDirectSlotAssign = async (match: Match, slot: 1 | 2, newEntryId: string) => {
-    await assignEntryToMatchSlot(match, slot, newEntryId || null);
-    loadTournamentData();
+    setEngineMsg(null);
+    try {
+      await assignEntryToMatchSlot(match, slot, newEntryId || null);
+      await loadTournamentData();
+    } catch (err: unknown) {
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error assigning slot',
+        isError: true,
+      });
+    }
   };
 
   const handleSeedNumberChange = async (entryId: string, newSeed: number) => {
@@ -345,8 +471,10 @@ export default function TournamentDetailPage() {
   };
 
   const handleAdvanceToStage2 = async () => {
+    if (!tournament || actionLockRef.current) return;
+    actionLockRef.current = true;
+    setBusyAction('stage2');
     setEngineMsg(null);
-    if (!tournament) return;
     try {
       const s2Id = await createAndAdvanceToStage2(
         tournament.id,
@@ -354,14 +482,23 @@ export default function TournamentDetailPage() {
         stage2Format
       );
       setActiveStageId(s2Id);
-      loadTournamentData();
+      await loadTournamentData();
     } catch (err: unknown) {
-      setEngineMsg(err instanceof Error ? err.message : 'Error');
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error',
+        isError: true,
+      });
+    } finally {
+      actionLockRef.current = false;
+      setBusyAction(null);
     }
   };
 
   const handleCompleteTournament = async () => {
-    if (!tournament || !currentStage) return;
+    if (!tournament || !currentStage || actionLockRef.current) return;
+    actionLockRef.current = true;
+    setBusyAction('complete');
+    setEngineMsg(null);
     try {
       await completeTournamentAndAssignMedals(
         tournament.id,
@@ -369,10 +506,16 @@ export default function TournamentDetailPage() {
         currentStage.format,
         entries
       );
-      setEngineMsg('🏆 Турнир завершён, медали вручены!');
-      loadTournamentData();
+      setEngineMsg({ text: '✓ Турнир завершён, медали вручены!' });
+      await loadTournamentData();
     } catch (err: unknown) {
-      setEngineMsg(err instanceof Error ? err.message : 'Error');
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error',
+        isError: true,
+      });
+    } finally {
+      actionLockRef.current = false;
+      setBusyAction(null);
     }
   };
 
@@ -412,7 +555,9 @@ export default function TournamentDetailPage() {
 
     const csvContent =
       '\uFEFF' +
-      rows.map((r) => r.map((cell) => `"${(cell || '').replace(/"/g, '""')}"`).join(',')).join('\n');
+      rows
+        .map((r) => r.map((cell) => `"${(cell || '').replace(/"/g, '""')}"`).join(','))
+        .join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -424,90 +569,130 @@ export default function TournamentDetailPage() {
 
   // --- GOOGLE FORMS CSV IMPORT ---
   const handleCsvImport = async () => {
-    if (!tournament || !csvText.trim()) return;
-    const lines = csvText
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
+    if (!tournament || !csvText.trim() || actionLockRef.current) return;
+    actionLockRef.current = true;
+    setBusyAction('csv');
+    try {
+      const lines = csvText
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
 
-    let importedCount = 0;
-    for (const line of lines) {
-      const parts = line.split(',').map((p) => p.trim());
-      const name = parts[0];
-      const uniId = parts[1] || null;
-      const rawCat = (parts[2] || 'student').toLowerCase();
-      const cat: PlayerCategory =
-        rawCat === 'professor' || rawCat === 'staff' || rawCat === 'guest'
-          ? (rawCat as PlayerCategory)
-          : 'student';
+      const seenIds = new Set(registeredPlayerIds);
+      let importedCount = 0;
+      let skippedDuplicates = 0;
 
-      if (!name) continue;
+      for (const line of lines) {
+        const parts = line.split(',').map((p) => p.trim());
+        const name = parts[0];
+        const uniId = parts[1] || null;
+        const rawCat = (parts[2] || 'student').toLowerCase();
+        const cat: PlayerCategory =
+          rawCat === 'professor' || rawCat === 'staff' || rawCat === 'guest'
+            ? (rawCat as PlayerCategory)
+            : 'student';
 
-      let playerRecord = allPlayers.find(
-        (p) =>
-          (uniId && p.university_id === uniId) ||
-          p.full_name.toLowerCase() === name.toLowerCase()
+        if (!name) continue;
+
+        let playerRecord = allPlayers.find(
+          (p) =>
+            (uniId && p.university_id === uniId) ||
+            p.full_name.toLowerCase() === name.toLowerCase()
+        );
+
+        if (!playerRecord) {
+          const { data: created } = await supabase
+            .from('players')
+            .insert({
+              full_name: name,
+              university_id: uniId,
+              category: cat,
+              elo_rating: 1000,
+            })
+            .select()
+            .single();
+          if (created) playerRecord = created as Player;
+        }
+
+        if (playerRecord) {
+          if (seenIds.has(playerRecord.id)) {
+            skippedDuplicates++;
+            continue;
+          }
+          const { error } = await supabase.from('tournament_entries').insert({
+            tournament_id: tournament.id,
+            player1_id: playerRecord.id,
+            attendance: 'registered',
+            seed_elo: playerRecord.elo_rating,
+          });
+          if (!error) {
+            seenIds.add(playerRecord.id);
+            importedCount++;
+          }
+        }
+      }
+
+      setCsvText('');
+      setShowCsvImport(false);
+      setRegMessage(
+        skippedDuplicates > 0
+          ? `✓ Импортировано: ${importedCount} (пропущено дубликатов: ${skippedDuplicates})`
+          : `✓ Импортировано из CSV: ${importedCount}`
       );
-
-      if (!playerRecord) {
-        const { data: created } = await supabase
-          .from('players')
-          .insert({
-            full_name: name,
-            university_id: uniId,
-            category: cat,
-            elo_rating: 1000,
-          })
-          .select()
-          .single();
-        if (created) playerRecord = created as Player;
-      }
-
-      if (playerRecord) {
-        const { error } = await supabase.from('tournament_entries').insert({
-          tournament_id: tournament.id,
-          player1_id: playerRecord.id,
-          attendance: 'registered',
-          seed_elo: playerRecord.elo_rating,
-        });
-        if (!error) importedCount++;
-      }
+      await loadTournamentData();
+    } finally {
+      actionLockRef.current = false;
+      setBusyAction(null);
     }
-
-    setCsvText('');
-    setShowCsvImport(false);
-    setRegMessage(`✓ Импортировано из CSV: ${importedCount}`);
-    loadTournamentData();
   };
 
   const handleRegisterEntry = async (e: React.FormEvent) => {
     e.preventDefault();
     setRegMessage(null);
-    if (!tournament || !player1) return;
+    if (!tournament || !player1 || actionLockRef.current) return;
     if (tournament.type === 'doubles' && !player2) return;
     if (tournament.type === 'doubles' && player1.id === player2?.id) return;
 
-    const seedElo =
-      tournament.type === 'doubles' && player2
-        ? Math.round((player1.elo_rating + player2.elo_rating) / 2)
-        : player1.elo_rating;
-
-    const { error } = await supabase.from('tournament_entries').insert({
-      tournament_id: tournament.id,
-      player1_id: player1.id,
-      player2_id: tournament.type === 'doubles' && player2 ? player2.id : null,
-      attendance: isJuryMode && checkInImmediately ? 'checked_in' : 'registered',
-      seed_elo: seedElo,
-    });
-
-    if (error) {
-      setRegMessage(`Ошибка: ${error.message}`);
+    if (
+      registeredPlayerIds.has(player1.id) ||
+      (tournament.type === 'doubles' && player2 && registeredPlayerIds.has(player2.id))
+    ) {
+      setRegMessage(
+        locale === 'ru'
+          ? 'Игрок уже зарегистрирован в этом турнире'
+          : 'Player is already registered in this tournament'
+      );
       return;
     }
-    setPlayer1(null);
-    setPlayer2(null);
-    setRegMessage('✓ OK!');
-    loadTournamentData();
+
+    actionLockRef.current = true;
+    setBusyAction('register');
+    try {
+      const seedElo =
+        tournament.type === 'doubles' && player2
+          ? Math.round((player1.elo_rating + player2.elo_rating) / 2)
+          : player1.elo_rating;
+
+      const { error } = await supabase.from('tournament_entries').insert({
+        tournament_id: tournament.id,
+        player1_id: player1.id,
+        player2_id: tournament.type === 'doubles' && player2 ? player2.id : null,
+        attendance: isJuryMode && checkInImmediately ? 'checked_in' : 'registered',
+        seed_elo: seedElo,
+      });
+
+      if (error) {
+        setRegMessage(`Ошибка: ${error.message}`);
+        return;
+      }
+      setPlayer1(null);
+      setPlayer2(null);
+      setRegMessage('✓ OK!');
+      await loadTournamentData();
+    } finally {
+      actionLockRef.current = false;
+      setBusyAction(null);
+    }
   };
 
   const handleAttendanceChange = async (entryId: string, status: AttendanceStatus) => {
@@ -521,7 +706,11 @@ export default function TournamentDetailPage() {
   };
 
   if (!tournament) {
-    return <div className="max-w-7xl mx-auto p-6 text-gray-500">Loading...</div>;
+    return (
+      <div className="max-w-7xl mx-auto p-6 text-sm text-[#828E88]">
+        Loading...
+      </div>
+    );
   }
 
   const setsToWin = Math.ceil(tournament.best_of / 2);
@@ -560,162 +749,29 @@ export default function TournamentDetailPage() {
     new Set(stageMatches.map((m) => m.group_number || 1))
   ).sort((a, b) => a - b);
 
-  // Visual Bracket Renderer (Now with Direct Slot Placement Dropdown & Undo!)
-  const renderBracketTree = (bracketMatches: Match[], title: string) => {
-    const rounds = Array.from(new Set(bracketMatches.map((m) => m.round_number))).sort(
-      (a, b) => a - b
-    );
-    if (rounds.length === 0) return null;
-
-    return (
-      <div className="space-y-3">
-        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">{title}</h3>
-        <div className="flex gap-6 overflow-x-auto pb-4 items-stretch">
-          {rounds.map((rNum, rIdx) => {
-            const rMatches = bracketMatches.filter((m) => m.round_number === rNum);
-            const isLastRound = rIdx === rounds.length - 1;
-            return (
-              <div key={rNum} className="min-w-[250px] flex flex-col justify-around gap-4">
-                <div className="text-xs font-bold uppercase text-center text-gray-500 bg-gray-100 py-1 rounded">
-                  {isLastRound && bracketMatches[0]?.bracket_type === 'main'
-                    ? t.TournamentDetail.finalRound
-                    : `${t.TournamentDetail.round} ${rNum}`}
-                </div>
-
-                <div className="flex flex-col justify-around flex-1 gap-5">
-                  {rMatches.map((m) => {
-                    const p1Won = m.winner_entry_id && m.winner_entry_id === m.entry1_id;
-                    const p2Won = m.winner_entry_id && m.winner_entry_id === m.entry2_id;
-                    const bothPresent = Boolean(m.entry1_id && m.entry2_id);
-                    const canScore =
-                      isJuryMode &&
-                      bothPresent &&
-                      (fastTestMode || m.status === 'in_progress' || m.status === 'completed');
-
-                    return (
-                      <div
-                        key={m.id}
-                        className={`border-2 rounded-lg bg-white shadow-xs overflow-hidden transition ${
-                          m.status === 'in_progress'
-                            ? 'border-blue-500 ring-2 ring-blue-100'
-                            : m.status === 'completed'
-                            ? 'border-green-300'
-                            : 'border-gray-200'
-                        }`}
-                      >
-                        <div className="bg-gray-50 px-2.5 py-1 text-[11px] text-gray-500 flex justify-between items-center border-b">
-                          <span>#{m.match_number}</span>
-                          {m.table_number ? (
-                            <span className="font-bold text-blue-600">
-                              🏓 {t.TournamentDetail.table} #{m.table_number}
-                            </span>
-                          ) : bothPresent && m.status === 'scheduled' && !fastTestMode ? (
-                            <span className="text-[10px] text-amber-600">
-                              {t.TournamentDetail.waitingTable}
-                            </span>
-                          ) : null}
-                          {m.status === 'walkover' && <span>BYE</span>}
-                          {isJuryMode && m.status === 'completed' && (
-                            <button
-                              type="button"
-                              onClick={() => handleUndoMatch(m)}
-                              className="text-[10px] text-red-600 font-semibold hover:underline"
-                            >
-                              ↺ Undo
-                            </button>
-                          )}
-                        </div>
-
-                        {/* MANUAL SLOT PLACEMENT MODE VS NORMAL WINNER CLICK */}
-                        {isJuryMode && manualSlotEditMode && m.status !== 'completed' ? (
-                          <div className="p-2 space-y-1.5 bg-amber-50/40">
-                            <select
-                              value={m.entry1_id || ''}
-                              onChange={(e) => handleDirectSlotAssign(m, 1, e.target.value)}
-                              className="w-full border rounded px-2 py-1 text-xs bg-white"
-                            >
-                              <option value="">— Пусто / BYE —</option>
-                              {checkedInEntries.map((ce) => (
-                                <option key={ce.id} value={ce.id}>
-                                  {formatEntryName(ce)}
-                                </option>
-                              ))}
-                            </select>
-                            <select
-                              value={m.entry2_id || ''}
-                              onChange={(e) => handleDirectSlotAssign(m, 2, e.target.value)}
-                              className="w-full border rounded px-2 py-1 text-xs bg-white"
-                            >
-                              <option value="">— Пусто / BYE —</option>
-                              {checkedInEntries.map((ce) => (
-                                <option key={ce.id} value={ce.id}>
-                                  {formatEntryName(ce)}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              disabled={!canScore}
-                              onClick={() => handleQuickResult(m, setsToWin, 0)}
-                              className={`w-full px-3 py-2 text-left text-xs flex justify-between items-center border-b transition ${
-                                p1Won
-                                  ? 'bg-green-100 font-bold text-green-900'
-                                  : canScore
-                                  ? 'hover:bg-blue-50 cursor-pointer'
-                                  : 'text-gray-400 cursor-default'
-                              }`}
-                            >
-                              <span className="truncate">{formatEntryName(m.entry1)}</span>
-                              <span className="ml-2 shrink-0">
-                                {p1Won ? '🏆' : canScore ? t.TournamentDetail.chooseWinner : ''}
-                              </span>
-                            </button>
-
-                            <button
-                              type="button"
-                              disabled={!canScore}
-                              onClick={() => handleQuickResult(m, 0, setsToWin)}
-                              className={`w-full px-3 py-2 text-left text-xs flex justify-between items-center transition ${
-                                p2Won
-                                  ? 'bg-green-100 font-bold text-green-900'
-                                  : canScore
-                                  ? 'hover:bg-blue-50 cursor-pointer'
-                                  : 'text-gray-400 cursor-default'
-                              }`}
-                            >
-                              <span className="truncate">{formatEntryName(m.entry2)}</span>
-                              <span className="ml-2 shrink-0">
-                                {p2Won ? '🏆' : canScore ? t.TournamentDetail.chooseWinner : ''}
-                              </span>
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
+  const filteredEntries = entries.filter((entry) => {
+    const q = participantSearch.trim().toLowerCase();
+    if (!q) return true;
+    return formatEntryName(entry).toLowerCase().includes(q);
+  });
 
   return (
-    <main className="max-w-[1440px] mx-auto p-4 md:p-6 space-y-6">
+    <main className="max-w-[1440px] mx-auto px-4 sm:px-6 py-6 space-y-6">
       {/* PODIUM BANNER IF COMPLETED */}
       {medalists.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex flex-wrap items-center justify-between gap-4">
-          <span className="font-bold text-sm text-amber-900">🏆 {t.Tournaments.podium}:</span>
-          <div className="flex flex-wrap gap-6 text-sm font-semibold">
+        <div className="bg-[#FEF7E6] border border-[#ECD58E] rounded-xl px-5 py-3.5 flex flex-wrap items-center justify-between gap-4">
+          <div className="inline-flex items-center gap-2 font-bold text-sm text-[#784A04]">
+            <Trophy className="w-4 h-4 text-[#B45309]" />
+            <span>{t.Tournaments.podium}</span>
+          </div>
+          <div className="flex flex-wrap gap-3 text-sm font-semibold">
             {medalists.map((m) => (
-              <span key={m.id} className="flex items-center gap-1.5">
+              <span
+                key={m.id}
+                className="inline-flex items-center gap-1.5 bg-white/80 border border-[#ECD58E] px-3 py-1 rounded-lg text-[#18211D]"
+              >
                 <span>
-                  {m.final_placement === 1 ? '🥇 1.' : m.final_placement === 2 ? '🥈 2.' : '🥉 3.'}
+                  {m.final_placement === 1 ? '🥇' : m.final_placement === 2 ? '🥈' : '🥉'}
                 </span>
                 <span>{formatEntryName(m)}</span>
               </span>
@@ -724,112 +780,171 @@ export default function TournamentDetailPage() {
         </div>
       )}
 
-      {/* 1. HEADER + JURY CONTROLS */}
-      <div className="bg-white border rounded-lg p-5 shadow-xs flex flex-col lg:flex-row justify-between gap-4">
-        <div className="space-y-1.5 flex-1">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-xl md:text-2xl font-bold">{tournament.title}</h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700">
-              Bo{tournament.best_of} ({t.Tournaments.upToWins} {setsToWin} {t.Tournaments.winsUnit})
-            </span>
+      {/* 1. HEADER & STAGE TABS */}
+      <section className="bg-white border border-[#E3DED2] rounded-xl shadow-[0_1px_2px_rgba(20,30,25,0.04)] overflow-hidden">
+        <div className="p-5 space-y-4">
+          <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+            <div className="space-y-1.5 min-w-0">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#18211D]">
+                  {tournament.title}
+                </h1>
+                <span className="font-num px-2.5 py-0.5 rounded-md text-xs font-bold bg-[#EBF3EE] text-[#14533C] border border-[#C5DDD0]">
+                  Bo{tournament.best_of} ({t.Tournaments.upToWins} {setsToWin}{' '}
+                  {t.Tournaments.winsUnit})
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#F1EDE4] text-[#53605A] border border-[#E3DED2]">
+                  {t.Tournaments.status[tournament.status]}
+                </span>
+              </div>
 
-            <button
-              onClick={handleExportCsv}
-              className="px-2.5 py-1 rounded text-xs font-semibold border bg-gray-50 hover:bg-gray-100 text-gray-700"
-            >
-              📊 CSV
-            </button>
+              <p className="text-xs text-[#53605A]">
+                {new Date(tournament.event_date).toLocaleString(
+                  locale === 'ru' ? 'ru-RU' : 'en-US',
+                  { dateStyle: 'medium', timeStyle: 'short' }
+                )}{' '}
+                • {tournament.type === 'singles' ? t.Tournaments.singles : t.Tournaments.doubles}
+                {tournament.description ? ` • ${tournament.description}` : ''}
+              </p>
+            </div>
 
-            {isStaff && (
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
               <button
-                onClick={() => setJuryViewEnabled(!juryViewEnabled)}
-                className={`px-2.5 py-1 rounded text-xs font-semibold border ${
-                  isJuryMode
-                    ? 'bg-gray-900 text-white border-gray-900'
-                    : 'bg-white text-gray-600 border-gray-300'
-                }`}
+                type="button"
+                onClick={handleExportCsv}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#E3DED2] bg-[#FAF8F4] hover:bg-[#F1EDE4] text-[#53605A] transition-colors"
               >
-                {isJuryMode ? t.Nav.juryModeOn : t.Nav.juryModeOff}
+                <Download className="w-3.5 h-3.5" />
+                <span>CSV</span>
               </button>
-            )}
+
+              {isStaff && (
+                <button
+                  type="button"
+                  onClick={() => setJuryViewEnabled(!juryViewEnabled)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    isJuryMode
+                      ? 'bg-[#18211D] text-white border-[#18211D]'
+                      : 'bg-white text-[#53605A] border-[#E3DED2] hover:bg-[#FAF8F4]'
+                  }`}
+                >
+                  {isJuryMode ? (
+                    <Unlock className="w-3.5 h-3.5" />
+                  ) : (
+                    <Eye className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {isJuryMode
+                      ? t.Nav.juryModeOn.replace(/^[^\wА-Яа-яЁё]+\s*/, '')
+                      : t.Nav.juryModeOff.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
-          <p className="text-xs text-gray-500">
-            {new Date(tournament.event_date).toLocaleString(
-              locale === 'ru' ? 'ru-RU' : 'en-US',
-              { dateStyle: 'medium', timeStyle: 'short' }
-            )}{' '}
-            • {tournament.type === 'singles' ? t.Tournaments.singles : t.Tournaments.doubles}
-          </p>
 
-          <div className="flex flex-wrap items-center gap-2 pt-2">
-            {stages.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => setActiveStageId(s.id)}
-                className={`px-3 py-1 rounded text-xs font-bold transition ${
-                  currentStage?.id === s.id
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                {t.TournamentDetail.stageTab} {s.stage_order}: {t.Staff.formats[s.format]}
-              </button>
-            ))}
+          {/* Stage tabs + sidebar toggle */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#EFECE4]">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {stages.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setActiveStageId(s.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    currentStage?.id === s.id
+                      ? 'bg-[#14533C] text-white'
+                      : 'bg-[#F1EDE4] text-[#53605A] hover:text-[#18211D]'
+                  }`}
+                >
+                  {t.TournamentDetail.stageTab} {s.stage_order}: {t.Staff.formats[s.format]}
+                </button>
+              ))}
+            </div>
 
             {stageMatches.length > 0 && (
               <button
+                type="button"
                 onClick={() => setShowSidebar(!showSidebar)}
-                className="ml-auto px-3 py-1 rounded text-xs font-semibold border bg-gray-50 hover:bg-gray-100 text-gray-700"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#E3DED2] bg-[#FAF8F4] hover:bg-[#F1EDE4] text-[#53605A] transition-colors"
               >
-                {showSidebar
-                  ? t.TournamentDetail.hideSidebar
-                  : `${t.TournamentDetail.showSidebar} (${freeTableNumbers.length}/8)`}
+                {showSidebar ? (
+                  <PanelRightClose className="w-3.5 h-3.5" />
+                ) : (
+                  <PanelRightOpen className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {showSidebar
+                    ? t.TournamentDetail.hideSidebar.replace(/^[▶◀]\s*/, '')
+                    : `${t.TournamentDetail.showSidebar.replace(/^[▶◀]\s*/, '')} (${freeTableNumbers.length}/8)`}
+                </span>
               </button>
             )}
           </div>
         </div>
 
-        {/* JURY PANEL */}
+        {/* FULL-WIDTH CLEAN JURY TOOLBAR */}
         {isJuryMode && (
-          <div className="bg-gray-50 border rounded-md p-3.5 space-y-2.5 min-w-[340px] max-w-md">
-            <div className="flex justify-between items-center gap-2">
-              <span className="text-[11px] font-bold uppercase text-gray-500">
+          <div className="bg-[#FAF8F4] border-t border-[#E3DED2] px-5 py-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[#53605A]">
                 {t.TournamentDetail.juryControls}
               </span>
 
-              <div className="flex gap-1.5">
-                <label className="flex items-center gap-1 text-[11px] font-semibold cursor-pointer bg-amber-50 border border-amber-200 text-amber-900 px-2 py-0.5 rounded">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 text-xs font-semibold cursor-pointer bg-[#FEF7E6] border border-[#EDD6A3] text-[#784A04] px-2.5 py-1 rounded-lg">
                   <input
                     type="checkbox"
                     checked={fastTestMode}
                     onChange={(e) => setFastTestMode(e.target.checked)}
+                    className="accent-[#14533C]"
                   />
-                  {t.TournamentDetail.fastTestMode}
+                  <FlaskConical className="w-3.5 h-3.5" />
+                  <span>{t.TournamentDetail.fastTestMode.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}</span>
                 </label>
 
-                <label className="flex items-center gap-1 text-[11px] font-semibold cursor-pointer bg-purple-50 border border-purple-200 text-purple-900 px-2 py-0.5 rounded">
+                <label className="inline-flex items-center gap-1.5 text-xs font-semibold cursor-pointer bg-white border border-[#E3DED2] text-[#53605A] px-2.5 py-1 rounded-lg">
                   <input
                     type="checkbox"
                     checked={manualSlotEditMode}
                     onChange={(e) => setManualSlotEditMode(e.target.checked)}
+                    className="accent-[#14533C]"
                   />
-                  ✎ Слоты
+                  <Pencil className="w-3.5 h-3.5" />
+                  <span>{locale === 'ru' ? 'Слоты' : 'Slots'}</span>
                 </label>
+
+                {stageMatches.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowSwapBar(!showSwapBar)}
+                    className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors ${
+                      showSwapBar
+                        ? 'bg-[#18211D] text-white border-[#18211D]'
+                        : 'bg-white text-[#53605A] border-[#E3DED2] hover:bg-[#F1EDE4]'
+                    }`}
+                  >
+                    <ArrowLeftRight className="w-3.5 h-3.5" />
+                    <span>{locale === 'ru' ? 'Поменять местами' : 'Swap Players'}</span>
+                  </button>
+                )}
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2.5 items-end">
               <div>
-                <label className="block text-[11px] font-medium mb-0.5">
+                <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
                   {t.TournamentDetail.changeStatus}
                 </label>
                 <select
                   value={tournament.status}
                   onChange={(e) => handleStatusChange(e.target.value as TournamentStatus)}
-                  className="w-full border bg-white rounded px-1.5 py-1 text-xs font-medium"
+                  className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-medium"
                 >
                   <option value="scheduled">{t.Tournaments.status.scheduled}</option>
-                  <option value="registration_open">{t.Tournaments.status.registration_open}</option>
+                  <option value="registration_open">
+                    {t.Tournaments.status.registration_open}
+                  </option>
                   <option value="check_in">{t.Tournaments.status.check_in}</option>
                   <option value="in_progress">{t.Tournaments.status.in_progress}</option>
                   <option value="completed">{t.Tournaments.status.completed}</option>
@@ -838,8 +953,9 @@ export default function TournamentDetailPage() {
 
               {currentStage && (
                 <div>
-                  <label className="block text-[11px] font-medium mb-0.5">
-                    {t.TournamentDetail.stageFormat} {isStageStructureLocked ? '🔒' : ''}
+                  <label className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#53605A] mb-1">
+                    <span>{t.TournamentDetail.stageFormat}</span>
+                    {isStageStructureLocked && <Lock className="w-3 h-3 text-[#828E88]" />}
                   </label>
                   <select
                     disabled={isStageStructureLocked}
@@ -847,10 +963,14 @@ export default function TournamentDetailPage() {
                     onChange={(e) =>
                       handleStageFormatChange(currentStage.id, e.target.value as StageFormat)
                     }
-                    className="w-full border bg-white rounded px-1.5 py-1 text-xs font-medium disabled:opacity-50"
+                    className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-medium disabled:opacity-50"
                   >
-                    <option value="single_elimination">{t.Staff.formats.single_elimination}</option>
-                    <option value="double_elimination">{t.Staff.formats.double_elimination}</option>
+                    <option value="single_elimination">
+                      {t.Staff.formats.single_elimination}
+                    </option>
+                    <option value="double_elimination">
+                      {t.Staff.formats.double_elimination}
+                    </option>
                     <option value="round_robin">{t.Staff.formats.round_robin}</option>
                     <option value="swiss">{t.Staff.formats.swiss}</option>
                   </select>
@@ -858,23 +978,23 @@ export default function TournamentDetailPage() {
               )}
 
               <div>
-                <label className="block text-[11px] font-medium mb-0.5">Посев / Seeding</label>
+                <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                  {locale === 'ru' ? 'Посев / Seeding' : 'Seeding'}
+                </label>
                 <select
                   value={seedingMode}
                   onChange={(e) => setSeedingMode(e.target.value as SeedingMode)}
-                  className="w-full border bg-white rounded px-1.5 py-1 text-xs font-medium"
+                  className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-medium"
                 >
                   <option value="elo">По Эло (Elo)</option>
                   <option value="manual">Ручной (Seed #)</option>
                   <option value="random">Слепой жребий</option>
                 </select>
               </div>
-            </div>
 
-            <div className="flex gap-2 items-end">
               {currentStage?.format === 'round_robin' && (
-                <div className="w-20">
-                  <label className="block text-[11px] font-medium mb-0.5">
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
                     {t.TournamentDetail.groupsCount}
                   </label>
                   <input
@@ -885,35 +1005,70 @@ export default function TournamentDetailPage() {
                     value={groupCount}
                     onFocus={(e) => e.target.select()}
                     onChange={(e) => setGroupCount(Math.max(1, Number(e.target.value)))}
-                    className="w-full border bg-white rounded px-2 py-1 text-xs"
+                    className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-num"
                   />
                 </div>
               )}
 
-              <button
-                onClick={handleGenerateDraw}
-                className="flex-1 bg-blue-600 text-white py-1.5 px-3 rounded text-xs font-semibold hover:bg-blue-700"
-              >
-                {t.TournamentDetail.generateDrawBtn} ({checkedInEntries.length})
-              </button>
-
-              {currentStage?.format === 'swiss' && stageMatches.length > 0 && (
+              <div className="col-span-2 lg:col-span-2 flex flex-wrap gap-2">
                 <button
-                  onClick={handleNextSwissRound}
-                  className="bg-indigo-600 text-white py-1.5 px-2.5 rounded text-xs font-semibold hover:bg-indigo-700"
+                  type="button"
+                  disabled={busyAction !== null}
+                  onClick={() => runDrawGeneration(false)}
+                  className={`flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 ${
+                    confirmRedraw
+                      ? 'bg-[#C2412D] text-white hover:bg-[#A33322]'
+                      : 'bg-[#14533C] text-white hover:bg-[#0E3E2C]'
+                  }`}
                 >
-                  {t.TournamentDetail.nextSwissRoundBtn}
+                  <Zap className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {busyAction === 'draw'
+                      ? '...'
+                      : confirmRedraw
+                      ? locale === 'ru'
+                        ? 'Подтвердить сброс и перегенерацию'
+                        : 'Confirm Reset & Redraw'
+                      : `${t.TournamentDetail.generateDrawBtn.replace(/^[^\wА-Яа-яЁё]+\s*/, '')} (${checkedInEntries.length})`}
+                  </span>
                 </button>
-              )}
+
+                {currentStage?.format === 'swiss' && stageMatches.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={handleNextSwissRound}
+                    className="inline-flex items-center gap-1 bg-[#1D527C] text-white py-1.5 px-3 rounded-lg text-xs font-semibold hover:bg-[#163E5E] disabled:opacity-50"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>
+                      {t.TournamentDetail.nextSwissRoundBtn.replace(/^\+\s*/, '')}
+                    </span>
+                  </button>
+                )}
+
+                {stageMatches.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={handleCompleteTournament}
+                    className="inline-flex items-center gap-1.5 bg-[#B45309] text-white py-1.5 px-3 rounded-lg text-xs font-semibold hover:bg-[#92400E] disabled:opacity-50"
+                  >
+                    <Flag className="w-3.5 h-3.5" />
+                    <span>
+                      {t.TournamentDetail.finishTournamentBtn.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
+                    </span>
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* SWAP ANY TWO PLAYERS BAR */}
-            {stageMatches.length > 0 && (
-              <div className="pt-2 border-t flex items-center gap-1.5">
+            {showSwapBar && stageMatches.length > 0 && (
+              <div className="pt-2.5 border-t border-[#E3DED2] flex flex-wrap items-center gap-2">
                 <select
                   value={swapEntryA}
                   onChange={(e) => setSwapEntryA(e.target.value)}
-                  className="flex-1 border bg-white rounded px-1.5 py-1 text-[11px]"
+                  className="flex-1 min-w-[160px] border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs"
                 >
                   <option value="">Игрок А...</option>
                   {checkedInEntries.map((ce) => (
@@ -922,11 +1077,11 @@ export default function TournamentDetailPage() {
                     </option>
                   ))}
                 </select>
-                <span className="text-xs text-gray-400">⇄</span>
+                <ArrowLeftRight className="w-3.5 h-3.5 text-[#828E88]" />
                 <select
                   value={swapEntryB}
                   onChange={(e) => setSwapEntryB(e.target.value)}
-                  className="flex-1 border bg-white rounded px-1.5 py-1 text-[11px]"
+                  className="flex-1 min-w-[160px] border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs"
                 >
                   <option value="">Игрок Б...</option>
                   {checkedInEntries.map((ce) => (
@@ -937,41 +1092,84 @@ export default function TournamentDetailPage() {
                 </select>
                 <button
                   type="button"
+                  disabled={busyAction !== null || !swapEntryA || !swapEntryB}
                   onClick={handleSwapPlayers}
-                  className="bg-purple-600 text-white px-2.5 py-1 rounded text-[11px] font-semibold hover:bg-purple-700 shrink-0"
+                  className="bg-[#18211D] text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-[#2C3732] disabled:opacity-40"
                 >
-                  Поменять
+                  {locale === 'ru' ? 'Поменять' : 'Swap'}
                 </button>
               </div>
             )}
 
-            {stageMatches.length > 0 && (
-              <button
-                onClick={handleCompleteTournament}
-                className="w-full bg-amber-600 text-white py-1.5 px-3 rounded text-xs font-semibold hover:bg-amber-700"
+            {engineMsg && (
+              <p
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${
+                  engineMsg.isError
+                    ? 'bg-[#FBECE9] border-[#F0C9C2] text-[#C2412D]'
+                    : 'bg-[#EBF3EE] border-[#C5DDD0] text-[#14533C]'
+                }`}
               >
-                {t.TournamentDetail.finishTournamentBtn}
-              </button>
+                {engineMsg.text}
+              </p>
             )}
-
-            {engineMsg && <p className="text-[11px] font-semibold text-blue-700">{engineMsg}</p>}
           </div>
         )}
-      </div>
+      </section>
+
+      {/* INTEGRITY DIAGNOSTIC BANNER (catches any pre-existing broken / duplicated brackets) */}
+      {integrityIssues.length > 0 && (
+        <div className="bg-[#FBECE9] border border-[#E5B4AC] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-2 text-sm font-bold text-[#9C2F1E]">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>
+                {locale === 'ru'
+                  ? 'Обнаружены дубликаты или конфликт слотов в сетке'
+                  : 'Bracket integrity issue detected'}
+              </span>
+            </div>
+            <ul className="text-xs text-[#7D2416] space-y-0.5 pl-6 list-disc">
+              {integrityIssues.slice(0, 4).map((issue, idx) => (
+                <li key={idx}>{issue.message}</li>
+              ))}
+              {integrityIssues.length > 4 && (
+                <li>
+                  +{integrityIssues.length - 4}{' '}
+                  {locale === 'ru' ? 'других замечаний' : 'more issues'}
+                </li>
+              )}
+            </ul>
+          </div>
+          {isJuryMode && (
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => runDrawGeneration(true)}
+              className="shrink-0 bg-[#C2412D] text-white px-3.5 py-2 rounded-lg text-xs font-semibold hover:bg-[#A33322] disabled:opacity-50"
+            >
+              {locale === 'ru' ? 'Пересоздать чистую сетку' : 'Regenerate clean draw'}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 2. MAIN WORKSPACE */}
       {stageMatches.length > 0 && currentStage && (
-        <div className="flex flex-col lg:flex-row gap-6 items-start">
-          <div className="flex-1 w-full bg-white border rounded-lg p-5 shadow-xs space-y-6 overflow-hidden">
-            <div className="flex flex-wrap justify-between items-center gap-2 border-b pb-3">
-              <h2 className="text-lg font-bold">{t.Staff.formats[currentStage.format]}</h2>
+        <div className="flex flex-col xl:flex-row gap-6 items-start">
+          <div className="flex-1 min-w-0 w-full bg-white border border-[#E3DED2] rounded-xl p-5 shadow-[0_1px_2px_rgba(20,30,25,0.04)] space-y-6">
+            <div className="flex flex-wrap justify-between items-center gap-2 border-b border-[#EFECE4] pb-3">
+              <h2 className="text-base font-bold text-[#18211D]">
+                {t.Staff.formats[currentStage.format]}
+              </h2>
               {isJuryMode && (
-                <span className="text-xs text-gray-500">
+                <span className="text-xs text-[#53605A]">
                   {manualSlotEditMode
-                    ? '✎ Режим ручной расстановки активен: выберите любого игрока в любой слот матча'
+                    ? locale === 'ru'
+                      ? 'Режим слотов активен: выбор игрока меняет его местами с текущим'
+                      : 'Slot edit active: picking a placed player swaps them cleanly'
                     : !fastTestMode
-                    ? t.TournamentDetail.safeModeHint
-                    : t.TournamentDetail.fastModeHint}
+                    ? t.TournamentDetail.safeModeHint.replace(/^[^\wА-Яа-яЁё]+\s*/, '')
+                    : t.TournamentDetail.fastModeHint.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
                 </span>
               )}
             </div>
@@ -980,27 +1178,120 @@ export default function TournamentDetailPage() {
             {(currentStage.format === 'single_elimination' ||
               currentStage.format === 'double_elimination') && (
               <div className="space-y-8">
-                {renderBracketTree(
-                  stageMatches.filter((m) => m.bracket_type === 'main'),
-                  t.TournamentDetail.mainBracket
-                )}
+                <BracketView
+                  bracketMatches={stageMatches.filter((m) => m.bracket_type === 'main')}
+                  title={t.TournamentDetail.mainBracket}
+                  locale={locale}
+                  isJuryMode={isJuryMode}
+                  fastTestMode={fastTestMode}
+                  manualSlotEditMode={manualSlotEditMode}
+                  checkedInEntries={checkedInEntries}
+                  busyMatchId={busyMatchId}
+                  flaggedMatchIds={flaggedMatchIds}
+                  formatEntryName={formatEntryName}
+                  onQuickWin={(m, slot) =>
+                    handleQuickResult(m, slot === 1 ? setsToWin : 0, slot === 2 ? setsToWin : 0)
+                  }
+                  onUndoMatch={handleUndoMatch}
+                  onDirectSlotAssign={handleDirectSlotAssign}
+                  labels={{
+                    round: t.TournamentDetail.round,
+                    finalRound: t.TournamentDetail.finalRound.replace(/^[^\wА-Яа-яЁё]+\s*/, ''),
+                    table: t.TournamentDetail.table,
+                    waitingTable: t.TournamentDetail.waitingTable,
+                    chooseWinner: t.TournamentDetail.chooseWinner,
+                  }}
+                />
 
-                {currentStage.format === 'single_elimination' &&
-                  renderBracketTree(
-                    stageMatches.filter((m) => m.bracket_type === 'third_place'),
-                    t.TournamentDetail.thirdPlaceMatch
-                  )}
+                {currentStage.format === 'single_elimination' && (
+                  <BracketView
+                    bracketMatches={stageMatches.filter((m) => m.bracket_type === 'third_place')}
+                    title={t.TournamentDetail.thirdPlaceMatch.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
+                    locale={locale}
+                    isJuryMode={isJuryMode}
+                    fastTestMode={fastTestMode}
+                    manualSlotEditMode={manualSlotEditMode}
+                    checkedInEntries={checkedInEntries}
+                    busyMatchId={busyMatchId}
+                    flaggedMatchIds={flaggedMatchIds}
+                    formatEntryName={formatEntryName}
+                    onQuickWin={(m, slot) =>
+                      handleQuickResult(
+                        m,
+                        slot === 1 ? setsToWin : 0,
+                        slot === 2 ? setsToWin : 0
+                      )
+                    }
+                    onUndoMatch={handleUndoMatch}
+                    onDirectSlotAssign={handleDirectSlotAssign}
+                    labels={{
+                      round: t.TournamentDetail.round,
+                      finalRound: t.TournamentDetail.finalRound.replace(/^[^\wА-Яа-яЁё]+\s*/, ''),
+                      table: t.TournamentDetail.table,
+                      waitingTable: t.TournamentDetail.waitingTable,
+                      chooseWinner: t.TournamentDetail.chooseWinner,
+                    }}
+                  />
+                )}
 
                 {currentStage.format === 'double_elimination' && (
                   <>
-                    {renderBracketTree(
-                      stageMatches.filter((m) => m.bracket_type === 'losers'),
-                      t.TournamentDetail.losersBracket
-                    )}
-                    {renderBracketTree(
-                      stageMatches.filter((m) => m.bracket_type === 'grand_final'),
-                      t.TournamentDetail.grandFinal
-                    )}
+                    <BracketView
+                      bracketMatches={stageMatches.filter((m) => m.bracket_type === 'losers')}
+                      title={t.TournamentDetail.losersBracket}
+                      locale={locale}
+                      isJuryMode={isJuryMode}
+                      fastTestMode={fastTestMode}
+                      manualSlotEditMode={manualSlotEditMode}
+                      checkedInEntries={checkedInEntries}
+                      busyMatchId={busyMatchId}
+                      flaggedMatchIds={flaggedMatchIds}
+                      formatEntryName={formatEntryName}
+                      onQuickWin={(m, slot) =>
+                        handleQuickResult(
+                          m,
+                          slot === 1 ? setsToWin : 0,
+                          slot === 2 ? setsToWin : 0
+                        )
+                      }
+                      onUndoMatch={handleUndoMatch}
+                      onDirectSlotAssign={handleDirectSlotAssign}
+                      labels={{
+                        round: t.TournamentDetail.round,
+                        finalRound: t.TournamentDetail.finalRound.replace(/^[^\wА-Яа-яЁё]+\s*/, ''),
+                        table: t.TournamentDetail.table,
+                        waitingTable: t.TournamentDetail.waitingTable,
+                        chooseWinner: t.TournamentDetail.chooseWinner,
+                      }}
+                    />
+                    <BracketView
+                      bracketMatches={stageMatches.filter((m) => m.bracket_type === 'grand_final')}
+                      title={t.TournamentDetail.grandFinal.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
+                      locale={locale}
+                      isJuryMode={isJuryMode}
+                      fastTestMode={fastTestMode}
+                      manualSlotEditMode={manualSlotEditMode}
+                      checkedInEntries={checkedInEntries}
+                      busyMatchId={busyMatchId}
+                      flaggedMatchIds={flaggedMatchIds}
+                      formatEntryName={formatEntryName}
+                      onQuickWin={(m, slot) =>
+                        handleQuickResult(
+                          m,
+                          slot === 1 ? setsToWin : 0,
+                          slot === 2 ? setsToWin : 0
+                        )
+                      }
+                      onUndoMatch={handleUndoMatch}
+                      onDirectSlotAssign={handleDirectSlotAssign}
+                      labels={{
+                        round: t.TournamentDetail.round,
+                        finalRound: t.TournamentDetail.finalRound.replace(/^[^\wА-Яа-яЁё]+\s*/, ''),
+                        table: t.TournamentDetail.table,
+                        waitingTable: t.TournamentDetail.waitingTable,
+                        chooseWinner: t.TournamentDetail.chooseWinner,
+                      }}
+                    />
                   </>
                 )}
               </div>
@@ -1008,21 +1299,24 @@ export default function TournamentDetailPage() {
 
             {/* VIEW B: ROUND ROBIN GROUPS */}
             {currentStage.format === 'round_robin' && (
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {distinctGroups.map((gNum) => {
                   const gMatches = stageMatches.filter((m) => (m.group_number || 1) === gNum);
                   const gStandings = liveStandings.filter((r) => r.groupNumber === gNum);
                   const advanceCountForThisGroup = groupAdvanceMap[gNum] ?? 2;
 
                   return (
-                    <div key={gNum} className="border rounded-lg p-4 bg-gray-50/50 space-y-3">
+                    <div
+                      key={gNum}
+                      className="border border-[#E3DED2] rounded-xl p-4 bg-[#FAF8F4]/70 space-y-3.5"
+                    >
                       <div className="flex justify-between items-center">
-                        <h3 className="font-bold text-sm text-blue-900">
+                        <h3 className="font-bold text-sm text-[#14533C]">
                           {t.TournamentDetail.group} #{gNum}
                         </h3>
                         {isJuryMode && (
-                          <label className="flex items-center gap-1.5 text-xs text-gray-600">
-                            {t.TournamentDetail.advanceFromGroup}
+                          <label className="flex items-center gap-1.5 text-xs text-[#53605A]">
+                            <span>{t.TournamentDetail.advanceFromGroup}</span>
                             <input
                               type="number"
                               min={1}
@@ -1035,47 +1329,62 @@ export default function TournamentDetailPage() {
                                   [gNum]: Math.max(1, Number(e.target.value)),
                                 })
                               }
-                              className="w-12 border bg-white rounded px-1.5 py-0.5 text-center font-bold text-emerald-700"
+                              className="w-12 border border-[#E3DED2] bg-white rounded-md px-1.5 py-0.5 text-center font-num font-bold text-[#14533C]"
                             />
                           </label>
                         )}
                       </div>
 
-                      <div className="overflow-x-auto bg-white border rounded-md">
+                      <div className="overflow-x-auto thin-scroll bg-white border border-[#E3DED2] rounded-lg">
                         <table className="w-full text-xs text-left border-collapse">
-                          <thead className="bg-gray-100 text-gray-700">
+                          <thead className="bg-[#F7F5F0] text-[#53605A] text-[11px]">
                             <tr>
-                              <th className="p-1.5 border">#</th>
-                              <th className="p-1.5 border">{t.Staff.fullName}</th>
+                              <th className="p-2 border-b border-r border-[#EFECE4]">#</th>
+                              <th className="p-2 border-b border-r border-[#EFECE4]">
+                                {t.Staff.fullName}
+                              </th>
                               {gStandings.map((_, idx) => (
-                                <th key={idx} className="p-1.5 border text-center w-8">
+                                <th
+                                  key={idx}
+                                  className="p-2 border-b border-r border-[#EFECE4] text-center w-8 font-num"
+                                >
                                   {idx + 1}
                                 </th>
                               ))}
-                              <th className="p-1.5 border text-center">W-L</th>
-                              <th className="p-1.5 border text-center">Sets</th>
+                              <th className="p-2 border-b border-r border-[#EFECE4] text-center">
+                                W-L
+                              </th>
+                              <th className="p-2 border-b border-[#EFECE4] text-center">Sets</th>
                             </tr>
                           </thead>
-                          <tbody>
+                          <tbody className="divide-y divide-[#EFECE4]">
                             {gStandings.map((row, rIdx) => {
                               const isQualifying = qualifiedIdSet.has(row.entry.id);
                               return (
                                 <tr
                                   key={row.entry.id}
-                                  className={isQualifying ? 'bg-emerald-50/60' : ''}
+                                  className={isQualifying ? 'bg-[#EBF3EE]/60' : ''}
                                 >
-                                  <td className="p-1.5 border font-bold">
+                                  <td
+                                    className={`p-2 border-r border-[#EFECE4] font-num font-bold ${
+                                      isQualifying
+                                        ? 'border-l-2 border-l-[#14533C] text-[#14533C]'
+                                        : 'text-[#828E88]'
+                                    }`}
+                                  >
                                     {rIdx + 1}
-                                    {isQualifying && (
-                                      <span className="ml-1 text-emerald-600">▲</span>
-                                    )}
                                   </td>
-                                  <td className="p-1.5 border font-medium truncate max-w-[130px]">
+                                  <td className="p-2 border-r border-[#EFECE4] font-medium text-[#18211D] truncate max-w-[135px]">
                                     {formatEntryName(row.entry)}
                                   </td>
                                   {gStandings.map((col, cIdx) => {
                                     if (rIdx === cIdx) {
-                                      return <td key={cIdx} className="p-1.5 border bg-gray-200" />;
+                                      return (
+                                        <td
+                                          key={cIdx}
+                                          className="p-2 border-r border-[#EFECE4] bg-[#F1EDE4]"
+                                        />
+                                      );
                                     }
                                     const match = gMatches.find(
                                       (m) =>
@@ -1088,7 +1397,7 @@ export default function TournamentDetailPage() {
                                       return (
                                         <td
                                           key={cIdx}
-                                          className="p-1.5 border text-center text-gray-300"
+                                          className="p-2 border-r border-[#EFECE4] text-center text-[#CCC5B6] font-num"
                                         >
                                           —
                                         </td>
@@ -1100,18 +1409,18 @@ export default function TournamentDetailPage() {
                                     return (
                                       <td
                                         key={cIdx}
-                                        className={`p-1.5 border text-center font-semibold ${
-                                          myS > oppS ? 'text-green-700' : 'text-red-600'
+                                        className={`p-2 border-r border-[#EFECE4] text-center font-num font-bold ${
+                                          myS > oppS ? 'text-[#14533C]' : 'text-[#C2412D]'
                                         }`}
                                       >
                                         {myS}:{oppS}
                                       </td>
                                     );
                                   })}
-                                  <td className="p-1.5 border text-center font-semibold">
+                                  <td className="p-2 border-r border-[#EFECE4] text-center font-num font-semibold text-[#18211D]">
                                     {row.wins}-{row.losses}
                                   </td>
-                                  <td className="p-1.5 border text-center text-gray-600">
+                                  <td className="p-2 text-center font-num text-[#53605A]">
                                     {row.setsWon}:{row.setsLost}
                                   </td>
                                 </tr>
@@ -1125,36 +1434,37 @@ export default function TournamentDetailPage() {
                         {gMatches.map((m) => {
                           const canScore =
                             isJuryMode &&
+                            busyMatchId !== m.id &&
                             (fastTestMode ||
                               m.status === 'in_progress' ||
                               m.status === 'completed');
                           return (
                             <div
                               key={m.id}
-                              className={`border rounded px-2.5 py-1.5 bg-white flex flex-wrap justify-between items-center gap-2 text-xs ${
+                              className={`border rounded-lg px-3 py-2 bg-white flex flex-wrap justify-between items-center gap-2 text-xs ${
                                 m.status === 'in_progress'
-                                  ? 'border-blue-500 bg-blue-50/20'
+                                  ? 'border-[#14533C] ring-1 ring-[#14533C]/15'
                                   : m.status === 'completed'
-                                  ? 'border-green-200 bg-green-50/20'
-                                  : ''
+                                  ? 'border-[#C5DDD0]'
+                                  : 'border-[#E3DED2]'
                               }`}
                             >
-                              <div className="truncate max-w-[200px]">
+                              <div className="truncate max-w-[210px]">
                                 <span
                                   className={
                                     m.winner_entry_id === m.entry1_id
-                                      ? 'font-bold text-green-800'
-                                      : ''
+                                      ? 'font-bold text-[#14533C]'
+                                      : 'text-[#18211D]'
                                   }
                                 >
                                   {formatEntryName(m.entry1)}
                                 </span>{' '}
-                                <span className="text-gray-400">vs</span>{' '}
+                                <span className="text-[#828E88]">vs</span>{' '}
                                 <span
                                   className={
                                     m.winner_entry_id === m.entry2_id
-                                      ? 'font-bold text-green-800'
-                                      : ''
+                                      ? 'font-bold text-[#14533C]'
+                                      : 'text-[#18211D]'
                                   }
                                 >
                                   {formatEntryName(m.entry2)}
@@ -1170,14 +1480,15 @@ export default function TournamentDetailPage() {
                                   return (
                                     <button
                                       key={`${s1}-${s2}`}
+                                      type="button"
                                       disabled={!canScore}
                                       onClick={() => handleQuickResult(m, s1, s2)}
-                                      className={`px-1.5 py-0.5 rounded text-[11px] font-semibold transition ${
+                                      className={`px-2 py-0.5 rounded-md font-num text-[11px] font-semibold transition-colors ${
                                         isSelected
-                                          ? 'bg-green-600 text-white'
+                                          ? 'bg-[#14533C] text-white'
                                           : canScore
-                                          ? 'bg-gray-100 hover:bg-blue-600 hover:text-white text-gray-700'
-                                          : 'bg-gray-50 text-gray-300 cursor-default'
+                                          ? 'bg-[#F1EDE4] hover:bg-[#14533C] hover:text-white text-[#53605A]'
+                                          : 'bg-[#FAF8F4] text-[#CCC5B6] cursor-default'
                                       }`}
                                     >
                                       {s1}:{s2}
@@ -1187,10 +1498,12 @@ export default function TournamentDetailPage() {
                                 {isJuryMode && m.status === 'completed' && (
                                   <button
                                     type="button"
+                                    disabled={busyMatchId === m.id}
                                     onClick={() => handleUndoMatch(m)}
-                                    className="ml-1 text-[10px] text-red-600 hover:underline"
+                                    title="Undo"
+                                    className="ml-1 text-[#C2412D] hover:opacity-75 p-0.5"
                                   >
-                                    ↺
+                                    <RotateCcw className="w-3.5 h-3.5" />
                                   </button>
                                 )}
                               </div>
@@ -1212,40 +1525,48 @@ export default function TournamentDetailPage() {
                   .map((rNum) => {
                     const rMatches = stageMatches.filter((m) => m.round_number === rNum);
                     return (
-                      <div key={rNum} className="border rounded-lg p-4 bg-gray-50/60 space-y-2.5">
-                        <h3 className="font-bold text-xs uppercase text-indigo-900">
+                      <div
+                        key={rNum}
+                        className="border border-[#E3DED2] rounded-xl p-4 bg-[#FAF8F4]/70 space-y-3"
+                      >
+                        <h3 className="font-bold text-xs uppercase tracking-wider text-[#14533C]">
                           {t.TournamentDetail.round} {rNum}
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                           {rMatches.map((m) => {
                             const canScore =
                               isJuryMode &&
+                              busyMatchId !== m.id &&
                               (fastTestMode ||
                                 m.status === 'in_progress' ||
                                 m.status === 'completed');
                             return (
                               <div
                                 key={m.id}
-                                className={`bg-white border rounded p-2.5 flex justify-between items-center gap-2 text-xs ${
-                                  m.status === 'in_progress' ? 'border-blue-500' : ''
+                                className={`bg-white border rounded-lg p-2.5 flex justify-between items-center gap-2 text-xs ${
+                                  m.status === 'in_progress'
+                                    ? 'border-[#14533C] ring-1 ring-[#14533C]/15'
+                                    : m.status === 'completed'
+                                    ? 'border-[#C5DDD0]'
+                                    : 'border-[#E3DED2]'
                                 }`}
                               >
                                 <div className="truncate">
                                   <span
                                     className={
                                       m.winner_entry_id === m.entry1_id
-                                        ? 'font-bold text-green-800'
-                                        : ''
+                                        ? 'font-bold text-[#14533C]'
+                                        : 'text-[#18211D]'
                                     }
                                   >
                                     {formatEntryName(m.entry1)}
                                   </span>{' '}
-                                  <span className="text-gray-400">vs</span>{' '}
+                                  <span className="text-[#828E88]">vs</span>{' '}
                                   <span
                                     className={
                                       m.winner_entry_id === m.entry2_id
-                                        ? 'font-bold text-green-800'
-                                        : ''
+                                        ? 'font-bold text-[#14533C]'
+                                        : 'text-[#18211D]'
                                     }
                                   >
                                     {formatEntryName(m.entry2)}
@@ -1253,7 +1574,7 @@ export default function TournamentDetailPage() {
                                 </div>
 
                                 {m.status === 'walkover' ? (
-                                  <span className="text-green-700 font-bold shrink-0">
+                                  <span className="font-num text-[#14533C] bg-[#EBF3EE] px-2 py-0.5 rounded font-bold shrink-0">
                                     BYE (+1)
                                   </span>
                                 ) : (
@@ -1266,14 +1587,15 @@ export default function TournamentDetailPage() {
                                       return (
                                         <button
                                           key={`${s1}-${s2}`}
+                                          type="button"
                                           disabled={!canScore}
                                           onClick={() => handleQuickResult(m, s1, s2)}
-                                          className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
+                                          className={`px-2 py-0.5 rounded-md font-num text-[11px] font-semibold transition-colors ${
                                             isSelected
-                                              ? 'bg-green-600 text-white'
+                                              ? 'bg-[#14533C] text-white'
                                               : canScore
-                                              ? 'bg-gray-100 hover:bg-indigo-600 hover:text-white text-gray-700'
-                                              : 'bg-gray-50 text-gray-300 cursor-default'
+                                              ? 'bg-[#F1EDE4] hover:bg-[#14533C] hover:text-white text-[#53605A]'
+                                              : 'bg-[#FAF8F4] text-[#CCC5B6] cursor-default'
                                           }`}
                                         >
                                           {s1}:{s2}
@@ -1283,10 +1605,12 @@ export default function TournamentDetailPage() {
                                     {isJuryMode && m.status === 'completed' && (
                                       <button
                                         type="button"
+                                        disabled={busyMatchId === m.id}
                                         onClick={() => handleUndoMatch(m)}
-                                        className="ml-1 text-[10px] text-red-600 hover:underline"
+                                        title="Undo"
+                                        className="ml-1 text-[#C2412D] hover:opacity-75 p-0.5"
                                       >
-                                        ↺
+                                        <RotateCcw className="w-3.5 h-3.5" />
                                       </button>
                                     )}
                                   </div>
@@ -1304,32 +1628,33 @@ export default function TournamentDetailPage() {
 
           {/* RIGHT SIDEBAR: LIVE STANDINGS + 8 TABLES */}
           {showSidebar && (
-            <aside className="w-full lg:w-[350px] shrink-0 space-y-4">
+            <aside className="w-full xl:w-[340px] shrink-0 space-y-4">
               {isGroupOrSwiss && (
-                <div className="bg-white border rounded-lg p-4 shadow-xs space-y-3">
+                <div className="bg-white border border-[#E3DED2] rounded-xl p-4 shadow-[0_1px_2px_rgba(20,30,25,0.04)] space-y-3">
                   <div className="flex justify-between items-center">
-                    <h3 className="text-xs font-bold uppercase text-gray-700">
-                      {t.TournamentDetail.standingsTitle}
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-[#53605A]">
+                      {t.TournamentDetail.standingsTitle.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
                     </h3>
-                    <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">
+                    <span className="font-num text-[11px] font-semibold text-[#14533C] bg-[#EBF3EE] border border-[#C5DDD0] px-2 py-0.5 rounded-md">
                       {t.TournamentDetail.qualifyingCount}: {predictedQualifiers.length}
                     </span>
                   </div>
 
                   {isSwiss && isJuryMode && (
-                    <div className="flex items-center justify-between bg-indigo-50/60 p-2 rounded border border-indigo-100 text-xs">
-                      <span className="font-medium text-indigo-950">
+                    <div className="flex items-center justify-between bg-[#FAF8F4] p-2 rounded-lg border border-[#E3DED2] text-xs">
+                      <span className="font-medium text-[#53605A]">
                         {t.TournamentDetail.swissTopLabel}
                       </span>
                       <div className="flex gap-1">
                         {[2, 4, 6, 8].map((n) => (
                           <button
                             key={n}
+                            type="button"
                             onClick={() => setSwissAdvanceCount(n)}
-                            className={`px-2 py-0.5 rounded font-bold ${
+                            className={`px-2 py-0.5 rounded font-num font-bold transition-colors ${
                               swissAdvanceCount === n
-                                ? 'bg-indigo-600 text-white'
-                                : 'bg-white border text-gray-700'
+                                ? 'bg-[#14533C] text-white'
+                                : 'bg-white border border-[#E3DED2] text-[#53605A]'
                             }`}
                           >
                             {t.TournamentDetail.top}-{n}
@@ -1339,35 +1664,40 @@ export default function TournamentDetailPage() {
                     </div>
                   )}
 
-                  <div className="max-h-60 overflow-y-auto border rounded">
-                    <table className="w-full text-[11px] text-left">
-                      <thead className="bg-gray-50 border-b text-gray-500 sticky top-0">
+                  <div className="max-h-60 overflow-y-auto thin-scroll border border-[#E3DED2] rounded-lg">
+                    <table className="w-full text-[11px] text-left border-collapse">
+                      <thead className="bg-[#F7F5F0] border-b border-[#E3DED2] text-[#53605A] sticky top-0">
                         <tr>
-                          <th className="p-1.5">#</th>
-                          <th className="p-1.5">{t.Staff.fullName}</th>
-                          <th className="p-1.5 text-center">W-L</th>
-                          <th className="p-1.5 text-center">Diff</th>
+                          <th className="p-2">#</th>
+                          <th className="p-2">{t.Staff.fullName}</th>
+                          <th className="p-2 text-center">W-L</th>
+                          <th className="p-2 text-center">Diff</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y">
+                      <tbody className="divide-y divide-[#EFECE4]">
                         {liveStandings.map((row, idx) => {
                           const qualifies = qualifiedIdSet.has(row.entry.id);
                           return (
                             <tr
                               key={row.entry.id}
-                              className={qualifies ? 'bg-emerald-50/70 font-medium' : ''}
+                              className={qualifies ? 'bg-[#EBF3EE]/70 font-medium' : ''}
                             >
-                              <td className="p-1.5 font-bold">
+                              <td
+                                className={`p-2 font-num font-bold ${
+                                  qualifies
+                                    ? 'border-l-2 border-l-[#14533C] text-[#14533C]'
+                                    : 'text-[#828E88]'
+                                }`}
+                              >
                                 {isSwiss ? idx + 1 : `G${row.groupNumber}-${row.rankInGroup}`}
                               </td>
-                              <td className="p-1.5 truncate max-w-[140px]">
-                                {qualifies && <span className="text-emerald-600 mr-1">●</span>}
+                              <td className="p-2 truncate max-w-[140px] text-[#18211D]">
                                 {formatEntryName(row.entry)}
                               </td>
-                              <td className="p-1.5 text-center font-bold">
+                              <td className="p-2 text-center font-num font-bold">
                                 {row.wins}-{row.losses}
                               </td>
-                              <td className="p-1.5 text-center text-gray-500">
+                              <td className="p-2 text-center font-num text-[#53605A]">
                                 {row.setDiff > 0 ? `+${row.setDiff}` : row.setDiff}
                               </td>
                             </tr>
@@ -1378,37 +1708,44 @@ export default function TournamentDetailPage() {
                   </div>
 
                   {isJuryMode && (
-                    <div className="pt-1 border-t space-y-2">
+                    <div className="pt-2 border-t border-[#EFECE4] space-y-2">
                       <div className="flex justify-between items-center text-xs">
-                        <span className="text-gray-600">
+                        <span className="text-[#53605A]">
                           {t.TournamentDetail.stage2FormatLabel}
                         </span>
                         <select
                           value={stage2Format}
                           onChange={(e) => setStage2Format(e.target.value as StageFormat)}
-                          className="border rounded px-2 py-1 text-xs font-medium bg-white"
+                          className="border border-[#E3DED2] rounded-lg px-2 py-1 text-xs font-medium bg-white"
                         >
                           <option value="single_elimination">Single Elimination</option>
                           <option value="double_elimination">Double Elimination</option>
                         </select>
                       </div>
                       <button
+                        type="button"
+                        disabled={busyAction !== null}
                         onClick={handleAdvanceToStage2}
-                        className="w-full bg-emerald-600 text-white py-2 rounded text-xs font-bold hover:bg-emerald-700"
+                        className="w-full bg-[#14533C] text-white py-2 rounded-lg text-xs font-bold hover:bg-[#0E3E2C] disabled:opacity-50 transition-colors"
                       >
-                        {t.TournamentDetail.createStage2Btn} ({predictedQualifiers.length})
+                        {t.TournamentDetail.createStage2Btn.replace(/^[^\wА-Яа-яЁё]+\s*/, '')} (
+                        {predictedQualifiers.length})
                       </button>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* COMPACT 8-TABLE DISPATCHER */}
-              <div className="bg-white border rounded-lg p-4 shadow-xs space-y-3">
-                <h3 className="text-xs font-bold uppercase text-gray-700">
-                  {t.TournamentDetail.tablesTitle} ({t.TournamentDetail.free}:{' '}
-                  {freeTableNumbers.length}/8)
-                </h3>
+              {/* COMPACT 8-TABLE COURT DISPATCHER */}
+              <div className="bg-white border border-[#E3DED2] rounded-xl p-4 shadow-[0_1px_2px_rgba(20,30,25,0.04)] space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-[#53605A]">
+                    {t.TournamentDetail.tablesTitle.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
+                  </h3>
+                  <span className="font-num text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[#F1EDE4] text-[#14533C]">
+                    {t.TournamentDetail.free}: {freeTableNumbers.length}/8
+                  </span>
+                </div>
 
                 <div className="grid grid-cols-2 gap-2">
                   {Array.from({ length: TOTAL_TABLES }, (_, i) => i + 1).map((tNum) => {
@@ -1416,36 +1753,46 @@ export default function TournamentDetailPage() {
                     return (
                       <div
                         key={tNum}
-                        className={`border rounded p-2 text-[11px] ${
+                        className={`border rounded-lg p-2.5 text-[11px] transition-colors ${
                           active
-                            ? 'bg-blue-50/70 border-blue-300'
-                            : 'bg-green-50/40 border-green-200'
+                            ? 'bg-[#EBF3EE]/80 border-[#14533C]/45 border-t-2 border-t-[#14533C]'
+                            : 'bg-[#FAF8F4] border-[#E3DED2]'
                         }`}
                       >
-                        <div className="flex justify-between font-bold mb-1">
-                          <span>
-                            {t.TournamentDetail.table} #{tNum}
+                        <div className="flex justify-between items-center font-bold mb-1">
+                          <span className="inline-flex items-center gap-1 font-num text-[#18211D]">
+                            {active && (
+                              <CircleDot className="w-2.5 h-2.5 text-[#14533C] animate-pulse" />
+                            )}
+                            #{tNum}
                           </span>
                           {active && isJuryMode ? (
                             <button
+                              type="button"
                               onClick={() => handleAssignTable(active.id, null)}
-                              className="text-[10px] text-red-600 hover:underline"
+                              className="text-[10px] font-semibold text-[#C2412D] hover:underline"
                             >
                               {t.TournamentDetail.releaseTable}
                             </button>
                           ) : !active ? (
-                            <span className="text-green-700">{t.TournamentDetail.tableFree}</span>
+                            <span className="text-[10px] font-medium text-[#14533C]">
+                              {t.TournamentDetail.tableFree}
+                            </span>
                           ) : null}
                         </div>
                         {active ? (
-                          <div className="truncate text-gray-800 leading-tight">
-                            <div className="truncate">{formatEntryName(active.entry1)}</div>
-                            <div className="truncate text-gray-500">
+                          <div className="truncate text-[#18211D] leading-snug">
+                            <div className="truncate font-medium">
+                              {formatEntryName(active.entry1)}
+                            </div>
+                            <div className="truncate text-[#53605A]">
                               vs {formatEntryName(active.entry2)}
                             </div>
                           </div>
                         ) : (
-                          <div className="text-gray-400">{t.TournamentDetail.waitingPair}</div>
+                          <div className="text-[#828E88] text-[10px]">
+                            {t.TournamentDetail.waitingPair}
+                          </div>
                         )}
                       </div>
                     );
@@ -1453,18 +1800,20 @@ export default function TournamentDetailPage() {
                 </div>
 
                 {isJuryMode && (
-                  <div className="border-t pt-2.5 space-y-2">
-                    <p className="text-[11px] font-bold uppercase text-gray-500">
-                      {t.TournamentDetail.callQueue} ({readyQueue.length})
+                  <div className="border-t border-[#EFECE4] pt-3 space-y-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-[#53605A]">
+                      {t.TournamentDetail.callQueue.replace(/^[^\wА-Яа-яЁё]+\s*/, '')} (
+                      {readyQueue.length})
                     </p>
-                    <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
+                    <div className="max-h-56 overflow-y-auto thin-scroll space-y-1.5 pr-1">
                       {readyQueue.slice(0, 8).map((m) => (
                         <div
                           key={m.id}
-                          className="border rounded p-2 bg-gray-50 text-[11px] space-y-1.5"
+                          className="border border-[#E3DED2] rounded-lg p-2.5 bg-[#FAF8F4] text-[11px] space-y-1.5"
                         >
-                          <div className="font-semibold text-gray-800 truncate">
-                            {formatEntryName(m.entry1)} <span className="text-gray-400">vs</span>{' '}
+                          <div className="font-semibold text-[#18211D] truncate">
+                            {formatEntryName(m.entry1)}{' '}
+                            <span className="text-[#828E88] font-normal">vs</span>{' '}
                             {formatEntryName(m.entry2)}
                           </div>
                           <div className="flex flex-wrap gap-1">
@@ -1472,14 +1821,15 @@ export default function TournamentDetailPage() {
                               freeTableNumbers.map((tNum) => (
                                 <button
                                   key={tNum}
+                                  type="button"
                                   onClick={() => handleAssignTable(m.id, tNum)}
-                                  className="bg-blue-600 text-white px-1.5 py-0.5 rounded text-[10px] font-semibold hover:bg-blue-700"
+                                  className="bg-[#14533C] text-white px-2 py-0.5 rounded font-num text-[10px] font-semibold hover:bg-[#0E3E2C] transition-colors"
                                 >
                                   → #{tNum}
                                 </button>
                               ))
                             ) : (
-                              <span className="text-amber-700 text-[10px]">
+                              <span className="text-[#92580A] text-[10px]">
                                 {t.TournamentDetail.allTablesBusy}
                               </span>
                             )}
@@ -1487,7 +1837,7 @@ export default function TournamentDetailPage() {
                         </div>
                       ))}
                       {readyQueue.length === 0 && (
-                        <p className="text-[11px] text-gray-400">
+                        <p className="text-[11px] text-[#828E88]">
                           {t.TournamentDetail.noReadyMatches}
                         </p>
                       )}
@@ -1502,33 +1852,39 @@ export default function TournamentDetailPage() {
 
       {/* 3. REGISTRATION + GOOGLE FORMS CSV IMPORT */}
       {(isJuryMode || tournament.status === 'registration_open') && (
-        <section className="bg-white border rounded-lg p-6 shadow-xs space-y-4">
-          <div className="flex justify-between items-center">
-            <h2 className="text-lg font-semibold">{t.TournamentDetail.registrationTitle}</h2>
+        <section className="bg-white border border-[#E3DED2] rounded-xl p-6 shadow-[0_1px_2px_rgba(20,30,25,0.04)] space-y-4">
+          <div className="flex flex-wrap justify-between items-center gap-3 border-b border-[#EFECE4] pb-3">
+            <h2 className="text-base font-bold text-[#18211D]">
+              {t.TournamentDetail.registrationTitle}
+            </h2>
             {isJuryMode && (
               <button
                 type="button"
                 onClick={() => setShowCsvImport(!showCsvImport)}
-                className="text-xs font-semibold px-3 py-1.5 rounded border bg-gray-50 hover:bg-gray-100"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-[#E3DED2] bg-[#FAF8F4] hover:bg-[#F1EDE4] text-[#53605A]"
               >
-                {t.TournamentDetail.csvImportTitle}
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>
+                  {t.TournamentDetail.csvImportTitle.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
+                </span>
               </button>
             )}
           </div>
 
           {showCsvImport && isJuryMode && (
-            <div className="bg-blue-50/50 border border-blue-200 rounded-md p-4 space-y-3">
+            <div className="bg-[#FAF8F4] border border-[#E3DED2] rounded-xl p-4 space-y-3">
               <textarea
                 rows={4}
                 value={csvText}
                 onChange={(e) => setCsvText(e.target.value)}
                 placeholder={t.TournamentDetail.csvPlaceholder}
-                className="w-full border bg-white rounded p-2.5 text-xs font-mono"
+                className="w-full border border-[#E3DED2] bg-white rounded-lg p-2.5 text-xs font-mono"
               />
               <button
                 type="button"
+                disabled={busyAction !== null}
                 onClick={handleCsvImport}
-                className="bg-blue-600 text-white px-4 py-1.5 rounded text-xs font-semibold hover:bg-blue-700"
+                className="bg-[#14533C] text-white px-4 py-1.5 rounded-lg text-xs font-semibold hover:bg-[#0E3E2C] disabled:opacity-50"
               >
                 {t.TournamentDetail.csvImportBtn}
               </button>
@@ -1555,27 +1911,33 @@ export default function TournamentDetailPage() {
               )}
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
+            <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
               {isJuryMode ? (
-                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <label className="flex items-center gap-2 text-sm text-[#53605A] cursor-pointer">
                   <input
                     type="checkbox"
                     checked={checkInImmediately}
                     onChange={(e) => setCheckInImmediately(e.target.checked)}
-                    className="rounded border-gray-300"
+                    className="rounded border-[#CCC5B6] accent-[#14533C]"
                   />
-                  {t.TournamentDetail.checkInImmediately}
+                  <span>{t.TournamentDetail.checkInImmediately}</span>
                 </label>
               ) : (
                 <div />
               )}
 
               <div className="flex items-center gap-3">
-                {regMessage && <span className="text-sm text-blue-700">{regMessage}</span>}
+                {regMessage && (
+                  <span className="text-sm font-medium text-[#14533C]">{regMessage}</span>
+                )}
                 <button
                   type="submit"
-                  disabled={!player1 || (tournament.type === 'doubles' && !player2)}
-                  className="bg-blue-600 text-white px-5 py-2 rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+                  disabled={
+                    busyAction !== null ||
+                    !player1 ||
+                    (tournament.type === 'doubles' && !player2)
+                  }
+                  className="bg-[#14533C] text-white px-5 py-2 rounded-lg text-sm font-semibold hover:bg-[#0E3E2C] transition-colors disabled:opacity-50"
                 >
                   {t.TournamentDetail.registerBtn}
                 </button>
@@ -1586,34 +1948,50 @@ export default function TournamentDetailPage() {
       )}
 
       {/* 4. PARTICIPANTS & CHECK-IN + MANUAL SEED ORDER */}
-      <section className="bg-white border rounded-lg p-6 shadow-xs space-y-4">
+      <section className="bg-white border border-[#E3DED2] rounded-xl p-6 shadow-[0_1px_2px_rgba(20,30,25,0.04)] space-y-4">
         <div className="flex flex-wrap justify-between items-center gap-4">
-          <h2 className="text-lg font-semibold">{t.TournamentDetail.participantsTitle}</h2>
-          <div className="flex gap-4 text-sm">
-            <span className="px-3 py-1 bg-gray-100 rounded-full">
-              {t.TournamentDetail.totalRegistered}: <strong>{entries.length}</strong>
+          <h2 className="text-base font-bold text-[#18211D]">
+            {t.TournamentDetail.participantsTitle}
+          </h2>
+          <div className="flex flex-wrap items-center gap-2.5 text-xs">
+            {entries.length > 6 && (
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-[#828E88] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={participantSearch}
+                  onChange={(e) => setParticipantSearch(e.target.value)}
+                  placeholder={t.Leaderboard.searchPlaceholder}
+                  className="border border-[#E3DED2] bg-[#FAF8F4] rounded-lg pl-7 pr-2.5 py-1 text-xs"
+                />
+              </div>
+            )}
+            <span className="px-3 py-1 bg-[#F1EDE4] text-[#53605A] rounded-full font-medium">
+              {t.TournamentDetail.totalRegistered}:{' '}
+              <strong className="font-num text-[#18211D]">{entries.length}</strong>
             </span>
-            <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full">
-              {t.TournamentDetail.checkedInCount}: <strong>{checkedInEntries.length}</strong>
+            <span className="px-3 py-1 bg-[#EBF3EE] text-[#14533C] border border-[#C5DDD0] rounded-full font-medium">
+              {t.TournamentDetail.checkedInCount}:{' '}
+              <strong className="font-num">{checkedInEntries.length}</strong>
             </span>
           </div>
         </div>
 
-        <div className="overflow-x-auto border rounded-md">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-gray-50 border-b text-gray-600">
+        <div className="overflow-x-auto thin-scroll border border-[#E3DED2] rounded-xl">
+          <table className="w-full text-sm text-left border-collapse">
+            <thead className="bg-[#F7F5F0] border-b border-[#E3DED2] text-[11px] uppercase tracking-wider text-[#53605A]">
               <tr>
-                <th className="p-3">Seed #</th>
-                <th className="p-3">{t.Staff.fullName}</th>
-                <th className="p-3">Seed Elo</th>
-                <th className="p-3">{t.TournamentDetail.changeStatus}</th>
-                {isJuryMode && <th className="p-3 text-right">Check-In</th>}
+                <th className="p-3 font-semibold">Seed #</th>
+                <th className="p-3 font-semibold">{t.Staff.fullName}</th>
+                <th className="p-3 font-semibold">Seed Elo</th>
+                <th className="p-3 font-semibold">{t.TournamentDetail.changeStatus}</th>
+                {isJuryMode && <th className="p-3 text-right font-semibold">Check-In</th>}
               </tr>
             </thead>
-            <tbody className="divide-y">
-              {entries.map((entry, idx) => (
-                <tr key={entry.id} className="hover:bg-gray-50">
-                  <td className="p-3 text-gray-500 w-24">
+            <tbody className="divide-y divide-[#EFECE4]">
+              {filteredEntries.map((entry, idx) => (
+                <tr key={entry.id} className="hover:bg-[#FAF8F4]">
+                  <td className="p-3 text-[#828E88] w-24 font-num">
                     {isJuryMode ? (
                       <input
                         type="number"
@@ -1623,60 +2001,68 @@ export default function TournamentDetailPage() {
                         onChange={(e) =>
                           handleSeedNumberChange(entry.id, Number(e.target.value))
                         }
-                        className="w-14 border rounded px-1.5 py-0.5 text-xs font-bold text-center"
+                        className="w-14 border border-[#E3DED2] bg-white rounded-md px-1.5 py-0.5 text-xs font-bold text-center text-[#18211D]"
                         title="Задайте номер посева вручную и выберите «Ручной (Seed #)» при генерации сетки"
                       />
                     ) : (
                       entry.seed_number ?? idx + 1
                     )}
                   </td>
-                  <td className="p-3 font-medium">
+                  <td className="p-3 font-medium text-[#18211D]">
                     {entry.final_placement === 1 && '🥇 '}
                     {entry.final_placement === 2 && '🥈 '}
                     {entry.final_placement === 3 && '🥉 '}
                     {formatEntryName(entry)}
                   </td>
-                  <td className="p-3 font-semibold">{entry.seed_elo}</td>
+                  <td className="p-3 font-num font-semibold text-[#14533C]">
+                    {entry.seed_elo}
+                  </td>
                   <td className="p-3">
                     <span
-                      className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
                         entry.attendance === 'checked_in'
-                          ? 'bg-green-100 text-green-800'
+                          ? 'bg-[#EBF3EE] text-[#14533C] border-[#C5DDD0]'
                           : entry.attendance === 'no_show'
-                          ? 'bg-red-100 text-red-800'
-                          : 'bg-gray-100 text-gray-700'
+                          ? 'bg-[#FBECE9] text-[#C2412D] border-[#F0C9C2]'
+                          : 'bg-[#F1EDE4] text-[#53605A] border-[#E3DED2]'
                       }`}
                     >
                       {t.TournamentDetail.attendance[entry.attendance]}
                     </span>
                   </td>
                   {isJuryMode && (
-                    <td className="p-3 text-right space-x-2">
+                    <td className="p-3 text-right whitespace-nowrap space-x-1.5">
                       <button
+                        type="button"
                         onClick={() => handleAttendanceChange(entry.id, 'checked_in')}
-                        className={`px-2.5 py-1 rounded text-xs font-medium ${
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
                           entry.attendance === 'checked_in'
-                            ? 'bg-green-600 text-white'
-                            : 'bg-gray-100 hover:bg-green-50 text-gray-700'
+                            ? 'bg-[#14533C] text-white'
+                            : 'bg-[#F1EDE4] hover:bg-[#EBF3EE] text-[#53605A]'
                         }`}
                       >
-                        ✓ {t.TournamentDetail.markCheckedIn}
+                        <Check className="w-3 h-3" />
+                        <span>{t.TournamentDetail.markCheckedIn}</span>
                       </button>
                       <button
+                        type="button"
                         onClick={() => handleAttendanceChange(entry.id, 'no_show')}
-                        className={`px-2.5 py-1 rounded text-xs font-medium ${
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
                           entry.attendance === 'no_show'
-                            ? 'bg-red-600 text-white'
-                            : 'bg-gray-100 hover:bg-red-50 text-gray-700'
+                            ? 'bg-[#C2412D] text-white'
+                            : 'bg-[#F1EDE4] hover:bg-[#FBECE9] text-[#53605A]'
                         }`}
                       >
-                        ✕ {t.TournamentDetail.markNoShow}
+                        <X className="w-3 h-3" />
+                        <span>{t.TournamentDetail.markNoShow}</span>
                       </button>
                       <button
+                        type="button"
                         onClick={() => handleDeleteEntry(entry.id)}
-                        className="px-2 py-1 text-xs text-gray-400 hover:text-red-600"
+                        title={t.TournamentDetail.remove}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-[#828E88] hover:text-[#C2412D]"
                       >
-                        {t.TournamentDetail.remove}
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </td>
                   )}

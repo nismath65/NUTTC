@@ -1,1 +1,63 @@
 @import "tailwindcss";
+
+:root {
+  --surface-canvas: #f7f5f0;
+  --surface-card: #ffffff;
+  --surface-subtle: #f1ede4;
+  --border-hairline: #e3ded2;
+  --border-strong: #ccc5b6;
+  --ink-primary: #18211d;
+  --ink-secondary: #53605a;
+  --ink-muted: #828e88;
+  --club-green: #14533c;
+  --club-green-hover: #0e3e2c;
+  --club-green-soft: #ebf3ee;
+  --paddle-red: #c2412d;
+  --paddle-red-soft: #fbece9;
+}
+
+@layer base {
+  html {
+    background-color: var(--surface-canvas);
+    color: var(--ink-primary);
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  button:not(:disabled),
+  select:not(:disabled),
+  a[href] {
+    cursor: pointer;
+  }
+
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--club-green);
+    outline-offset: 1px;
+  }
+}
+
+.font-num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Subtle custom scrollbars for wide brackets & tables */
+.thin-scroll::-webkit-scrollbar {
+  height: 7px;
+  width: 7px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: #d5cfc1;
+  border-radius: 999px;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: #b7b0a0;
+}

@@ -2,8 +2,10 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Lock } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useLanguage } from '@/components/LanguageProvider';
+import ClubEmblem from '@/components/ClubEmblem';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -34,51 +36,70 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="max-w-md mx-auto mt-16 p-6 bg-white border rounded-lg shadow-xs space-y-5">
-      <h1 className="text-xl font-bold text-center">
-        {locale === 'ru' ? 'Вход для Жюри и Организаторов' : 'Jury & Staff Login'}
-      </h1>
-
-      <form onSubmit={handleLogin} className="space-y-4">
-        <div>
-          <label className="block text-xs font-medium mb-1">Email</label>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="jury@nu.edu.kz"
-            className="w-full border rounded-md px-3 py-2 text-sm"
-          />
+    <main className="max-w-md mx-auto px-4 mt-14 sm:mt-20">
+      <div className="bg-white border border-[#E3DED2] rounded-xl p-6 sm:p-7 shadow-[0_2px_8px_rgba(20,30,25,0.05)] space-y-6">
+        <div className="flex flex-col items-center text-center space-y-2">
+          <div className="w-11 h-11 rounded-full bg-[#EBF3EE] border border-[#C5DDD0] flex items-center justify-center">
+            <ClubEmblem className="w-6 h-6" />
+          </div>
+          <h1 className="text-xl font-bold text-[#18211D]">
+            {locale === 'ru' ? 'Вход для Жюри и Организаторов' : 'Jury & Staff Login'}
+          </h1>
+          <p className="text-xs text-[#828E88]">
+            {locale === 'ru'
+              ? 'Доступ для судей и организаторов клуба NUTTC'
+              : 'Access for NUTTC referees and event staff'}
+          </p>
         </div>
 
-        <div>
-          <label className="block text-xs font-medium mb-1">
-            {locale === 'ru' ? 'Пароль' : 'Password'}
-          </label>
-          <input
-            type="password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full border rounded-md px-3 py-2 text-sm"
-          />
-        </div>
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-[#53605A] mb-1.5">Email</label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="jury@nu.edu.kz"
+              className="w-full border border-[#E3DED2] bg-[#FAF8F4] rounded-lg px-3 py-2 text-sm text-[#18211D]"
+            />
+          </div>
 
-        {errorMsg && <p className="text-xs text-red-600 font-medium">{errorMsg}</p>}
+          <div>
+            <label className="block text-xs font-semibold text-[#53605A] mb-1.5">
+              {locale === 'ru' ? 'Пароль' : 'Password'}
+            </label>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full border border-[#E3DED2] bg-[#FAF8F4] rounded-lg px-3 py-2 text-sm text-[#18211D]"
+            />
+          </div>
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full bg-blue-600 text-white py-2 rounded-md text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
-        >
-          {loading
-            ? '...'
-            : locale === 'ru'
-            ? 'Войти в панель жюри'
-            : 'Sign In'}
-        </button>
-      </form>
+          {errorMsg && (
+            <p className="text-xs text-[#C2412D] bg-[#FBECE9] border border-[#F0C9C2] rounded-lg px-3 py-2 font-medium">
+              {errorMsg}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full inline-flex items-center justify-center gap-2 bg-[#14533C] text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-[#0E3E2C] transition-colors disabled:opacity-50"
+          >
+            <Lock className="w-4 h-4" />
+            <span>
+              {loading
+                ? '...'
+                : locale === 'ru'
+                ? 'Войти в панель жюри'
+                : 'Sign In'}
+            </span>
+          </button>
+        </form>
+      </div>
     </main>
   );
 }
