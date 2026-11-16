@@ -9,9 +9,9 @@
   --ink-primary: #18211d;
   --ink-secondary: #53605a;
   --ink-muted: #828e88;
-  --club-red: #B91C1C;
-  --club-red-hover: #991B1B;
-  --club-red-soft: #FEF2F2;
+  --club-blue: #1d4ed8;
+  --club-blue-hover: #1e40af;
+  --club-blue-soft: #eff6ff;
   --paddle-red: #c2412d;
   --paddle-red-soft: #fbece9;
 }
@@ -36,7 +36,7 @@
   select:focus-visible,
   textarea:focus-visible,
   button:focus-visible {
-    outline: 2px solid var(--club-red);
+    outline: 2px solid var(--club-blue);
     outline-offset: 1px;
   }
 }

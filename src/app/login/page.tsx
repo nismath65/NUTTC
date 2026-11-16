@@ -39,7 +39,7 @@ export default function LoginPage() {
     <main className="max-w-md mx-auto px-4 mt-14 sm:mt-20">
       <div className="bg-white border border-[#E3DED2] rounded-xl p-6 sm:p-7 shadow-[0_2px_8px_rgba(20,30,25,0.05)] space-y-6">
         <div className="flex flex-col items-center text-center space-y-2">
-          <div className="w-11 h-11 rounded-full bg-[#FEF2F2] border border-[#FECACA] flex items-center justify-center">
+          <div className="w-11 h-11 rounded-full bg-[#EFF6FF] border border-[#BFDBFE] flex items-center justify-center">
             <ClubEmblem className="w-6 h-6" />
           </div>
           <h1 className="text-xl font-bold text-[#18211D]">
@@ -87,7 +87,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full inline-flex items-center justify-center gap-2 bg-[#B91C1C] text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-[#991B1B] transition-colors disabled:opacity-50"
+            className="w-full inline-flex items-center justify-center gap-2 bg-[#1D4ED8] text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-[#1E40AF] transition-colors disabled:opacity-50"
           >
             <Lock className="w-4 h-4" />
             <span>

@@ -170,7 +170,7 @@ export default function BracketView({
                   key={line.id}
                   d={`M ${line.x1} ${line.y1} H ${line.midX} V ${line.y2} H ${line.x2}`}
                   fill="none"
-                  stroke={line.active ? '#B91C1C' : '#D5CFC1'}
+                  stroke={line.active ? '#1D4ED8' : '#D5CFC1'}
                   strokeWidth={line.active ? 1.75 : 1.25}
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -223,9 +223,9 @@ export default function BracketView({
                           isFlagged
                             ? 'bg-white border-[1.5px] border-[#C2412D] ring-2 ring-[#C2412D]/15'
                             : isLive
-                            ? 'bg-white border-[1.5px] border-[#B91C1C] ring-2 ring-[#B91C1C]/12'
+                            ? 'bg-white border-[1.5px] border-[#1D4ED8] ring-2 ring-[#1D4ED8]/12'
                             : isCompleted
-                            ? 'bg-white border border-[#FECACA]'
+                            ? 'bg-white border border-[#BFDBFE]'
                             : isWalkover
                             ? 'bg-[#FAF8F4] border border-dashed border-[#D5CFC1]'
                             : 'bg-white border border-[#DFD9CC]'
@@ -235,7 +235,7 @@ export default function BracketView({
                         <div
                           className={`px-2.5 py-1 text-[11px] flex justify-between items-center border-b ${
                             isLive
-                              ? 'bg-[#FEF2F2] border-[#FECACA] text-[#B91C1C]'
+                              ? 'bg-[#EFF6FF] border-[#BFDBFE] text-[#1D4ED8]'
                               : isFlagged
                               ? 'bg-[#FBECE9] border-[#F0C9C2] text-[#C2412D]'
                               : 'bg-[#FAF8F4] border-[#EFECE4] text-[#828E88]'
@@ -248,7 +248,7 @@ export default function BracketView({
 
                           <div className="flex items-center gap-2">
                             {m.table_number ? (
-                              <span className="inline-flex items-center gap-1 font-num font-bold text-[#B91C1C]">
+                              <span className="inline-flex items-center gap-1 font-num font-bold text-[#1D4ED8]">
                                 <CircleDot className="w-2.5 h-2.5 animate-pulse" />
                                 {labels.table} #{m.table_number}
                               </span>
@@ -321,7 +321,7 @@ export default function BracketView({
                                   onClick={() => onQuickWin(m, slot)}
                                   className={`group/row w-full px-2.5 py-2 text-left text-xs flex items-center justify-between gap-2 transition-colors ${
                                     won
-                                      ? 'bg-[#FEF2F2]/75 text-[#B91C1C] font-semibold'
+                                      ? 'bg-[#EFF6FF]/75 text-[#1D4ED8] font-semibold'
                                       : canScore
                                       ? 'hover:bg-[#F7F5F0] text-[#18211D]'
                                       : 'text-[#18211D] cursor-default'
@@ -349,11 +349,11 @@ export default function BracketView({
                                   <div className="flex items-center gap-1.5 shrink-0">
                                     {isCompleted && (
                                       <>
-                                        {won && <Trophy className="w-3 h-3 text-[#B91C1C]" />}
+                                        {won && <Trophy className="w-3 h-3 text-[#1D4ED8]" />}
                                         <span
                                           className={`font-num text-[11px] font-bold px-1.5 py-0.5 rounded ${
                                             won
-                                              ? 'bg-[#B91C1C] text-white'
+                                              ? 'bg-[#1D4ED8] text-white'
                                               : 'bg-[#F1EDE4] text-[#828E88]'
                                           }`}
                                         >
@@ -362,7 +362,7 @@ export default function BracketView({
                                       </>
                                     )}
                                     {!isCompleted && canScore && (
-                                      <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold border border-[#DED8CA] bg-[#FAF8F4] text-[#53605A] group-hover/row:bg-[#B91C1C] group-hover/row:text-white group-hover/row:border-[#B91C1C] transition-colors">
+                                      <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold border border-[#DED8CA] bg-[#FAF8F4] text-[#53605A] group-hover/row:bg-[#1D4ED8] group-hover/row:text-white group-hover/row:border-[#1D4ED8] transition-colors">
                                         {labels.chooseWinner}
                                       </span>
                                     )}

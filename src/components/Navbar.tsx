@@ -37,7 +37,7 @@ export default function Navbar() {
               href="/"
               className={`px-2.5 sm:px-3 py-1 rounded-md text-xs sm:text-sm font-medium transition-colors ${
                 isTournamentsActive
-                  ? 'bg-white text-[#B91C1C] font-semibold shadow-[0_1px_2px_rgba(20,30,25,0.06)]'
+                  ? 'bg-white text-[#1D4ED8] font-semibold shadow-[0_1px_2px_rgba(20,30,25,0.06)]'
                   : 'text-[#53605A] hover:text-[#18211D]'
               }`}
             >
@@ -47,7 +47,7 @@ export default function Navbar() {
               href="/leaderboard"
               className={`px-2.5 sm:px-3 py-1 rounded-md text-xs sm:text-sm font-medium transition-colors ${
                 isLeaderboardActive
-                  ? 'bg-white text-[#B91C1C] font-semibold shadow-[0_1px_2px_rgba(20,30,25,0.06)]'
+                  ? 'bg-white text-[#1D4ED8] font-semibold shadow-[0_1px_2px_rgba(20,30,25,0.06)]'
                   : 'text-[#53605A] hover:text-[#18211D]'
               }`}
             >
@@ -61,8 +61,8 @@ export default function Navbar() {
                 href="/staff"
                 className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 sm:px-3 py-1.5 rounded-lg border transition-colors ${
                   isStaffActive
-                    ? 'bg-[#B91C1C] text-white border-[#B91C1C]'
-                    : 'bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA] hover:bg-[#FEE2E2]'
+                    ? 'bg-[#1D4ED8] text-white border-[#1D4ED8]'
+                    : 'bg-[#EFF6FF] text-[#1D4ED8] border-[#BFDBFE] hover:bg-[#DBEAFE]'
                 }`}
               >
                 <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
@@ -105,7 +105,7 @@ export default function Navbar() {
               onClick={() => setLocale('ru')}
               className={`px-2 py-1.5 transition-colors ${
                 locale === 'ru'
-                  ? 'bg-[#B91C1C] text-white'
+                  ? 'bg-[#1D4ED8] text-white'
                   : 'text-[#53605A] hover:text-[#18211D]'
               }`}
             >
@@ -116,7 +116,7 @@ export default function Navbar() {
               onClick={() => setLocale('en')}
               className={`px-2 py-1.5 transition-colors ${
                 locale === 'en'
-                  ? 'bg-[#B91C1C] text-white'
+                  ? 'bg-[#1D4ED8] text-white'
                   : 'text-[#53605A] hover:text-[#18211D]'
               }`}
             >

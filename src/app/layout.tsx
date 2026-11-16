@@ -16,7 +16,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ru">
-      <body className="bg-[#F7F5F0] text-[#18211D] min-h-screen antialiased selection:bg-[#B91C1C]/15 selection:text-[#B91C1C]">
+      <body className="bg-[#F7F5F0] text-[#18211D] min-h-screen antialiased selection:bg-[#1D4ED8]/15 selection:text-[#1D4ED8]">
         <LanguageProvider>
           <AuthProvider>
             <Navbar />
