@@ -787,7 +787,7 @@ export default function TournamentDetailPage() {
                 <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#18211D]">
                   {tournament.title}
                 </h1>
-                <span className="font-num px-2.5 py-0.5 rounded-md text-xs font-bold bg-[#EBF3EE] text-[#14533C] border border-[#C5DDD0]">
+                <span className="font-num px-2.5 py-0.5 rounded-md text-xs font-bold bg-[#FEF2F2] text-[#B91C1C] border border-[#FECACA]">
                   Bo{tournament.best_of} ({t.Tournaments.upToWins} {setsToWin}{' '}
                   {t.Tournaments.winsUnit})
                 </span>
@@ -851,7 +851,7 @@ export default function TournamentDetailPage() {
                   onClick={() => setActiveStageId(s.id)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                     currentStage?.id === s.id
-                      ? 'bg-[#14533C] text-white'
+                      ? 'bg-[#B91C1C] text-white'
                       : 'bg-[#F1EDE4] text-[#53605A] hover:text-[#18211D]'
                   }`}
                 >
@@ -895,7 +895,7 @@ export default function TournamentDetailPage() {
                     type="checkbox"
                     checked={fastTestMode}
                     onChange={(e) => setFastTestMode(e.target.checked)}
-                    className="accent-[#14533C]"
+                    className="accent-[#B91C1C]"
                   />
                   <FlaskConical className="w-3.5 h-3.5" />
                   <span>{t.TournamentDetail.fastTestMode.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}</span>
@@ -906,7 +906,7 @@ export default function TournamentDetailPage() {
                     type="checkbox"
                     checked={manualSlotEditMode}
                     onChange={(e) => setManualSlotEditMode(e.target.checked)}
-                    className="accent-[#14533C]"
+                    className="accent-[#B91C1C]"
                   />
                   <Pencil className="w-3.5 h-3.5" />
                   <span>{locale === 'ru' ? 'Слоты' : 'Slots'}</span>
@@ -1016,7 +1016,7 @@ export default function TournamentDetailPage() {
                   className={`flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 ${
                     confirmRedraw
                       ? 'bg-[#C2412D] text-white hover:bg-[#A33322]'
-                      : 'bg-[#14533C] text-white hover:bg-[#0E3E2C]'
+                      : 'bg-[#B91C1C] text-white hover:bg-[#991B1B]'
                   }`}
                 >
                   <Zap className="w-3.5 h-3.5 shrink-0" />
@@ -1104,7 +1104,7 @@ export default function TournamentDetailPage() {
                 className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${
                   engineMsg.isError
                     ? 'bg-[#FBECE9] border-[#F0C9C2] text-[#C2412D]'
-                    : 'bg-[#EBF3EE] border-[#C5DDD0] text-[#14533C]'
+                    : 'bg-[#FEF2F2] border-[#FECACA] text-[#B91C1C]'
                 }`}
               >
                 {engineMsg.text}
@@ -1309,7 +1309,7 @@ export default function TournamentDetailPage() {
                       className="border border-[#E3DED2] rounded-xl p-4 bg-[#FAF8F4]/70 space-y-3.5"
                     >
                       <div className="flex justify-between items-center">
-                        <h3 className="font-bold text-sm text-[#14533C]">
+                        <h3 className="font-bold text-sm text-[#B91C1C]">
                           {t.TournamentDetail.group} #{gNum}
                         </h3>
                         {isJuryMode && (
@@ -1327,7 +1327,7 @@ export default function TournamentDetailPage() {
                                   [gNum]: Math.max(1, Number(e.target.value)),
                                 })
                               }
-                              className="w-12 border border-[#E3DED2] bg-white rounded-md px-1.5 py-0.5 text-center font-num font-bold text-[#14533C]"
+                              className="w-12 border border-[#E3DED2] bg-white rounded-md px-1.5 py-0.5 text-center font-num font-bold text-[#B91C1C]"
                             />
                           </label>
                         )}
@@ -1361,12 +1361,12 @@ export default function TournamentDetailPage() {
                               return (
                                 <tr
                                   key={row.entry.id}
-                                  className={isQualifying ? 'bg-[#EBF3EE]/60' : ''}
+                                  className={isQualifying ? 'bg-[#FEF2F2]/60' : ''}
                                 >
                                   <td
                                     className={`p-2 border-r border-[#EFECE4] font-num font-bold ${
                                       isQualifying
-                                        ? 'border-l-2 border-l-[#14533C] text-[#14533C]'
+                                        ? 'border-l-2 border-l-[#B91C1C] text-[#B91C1C]'
                                         : 'text-[#828E88]'
                                     }`}
                                   >
@@ -1408,7 +1408,7 @@ export default function TournamentDetailPage() {
                                       <td
                                         key={cIdx}
                                         className={`p-2 border-r border-[#EFECE4] text-center font-num font-bold ${
-                                          myS > oppS ? 'text-[#14533C]' : 'text-[#C2412D]'
+                                          myS > oppS ? 'text-[#B91C1C]' : 'text-[#C2412D]'
                                         }`}
                                       >
                                         {myS}:{oppS}
@@ -1441,9 +1441,9 @@ export default function TournamentDetailPage() {
                               key={m.id}
                               className={`border rounded-lg px-3 py-2 bg-white flex flex-wrap justify-between items-center gap-2 text-xs ${
                                 m.status === 'in_progress'
-                                  ? 'border-[#14533C] ring-1 ring-[#14533C]/15'
+                                  ? 'border-[#B91C1C] ring-1 ring-[#B91C1C]/15'
                                   : m.status === 'completed'
-                                  ? 'border-[#C5DDD0]'
+                                  ? 'border-[#FECACA]'
                                   : 'border-[#E3DED2]'
                               }`}
                             >
@@ -1451,7 +1451,7 @@ export default function TournamentDetailPage() {
                                 <span
                                   className={
                                     m.winner_entry_id === m.entry1_id
-                                      ? 'font-bold text-[#14533C]'
+                                      ? 'font-bold text-[#B91C1C]'
                                       : 'text-[#18211D]'
                                   }
                                 >
@@ -1461,7 +1461,7 @@ export default function TournamentDetailPage() {
                                 <span
                                   className={
                                     m.winner_entry_id === m.entry2_id
-                                      ? 'font-bold text-[#14533C]'
+                                      ? 'font-bold text-[#B91C1C]'
                                       : 'text-[#18211D]'
                                   }
                                 >
@@ -1483,9 +1483,9 @@ export default function TournamentDetailPage() {
                                       onClick={() => handleQuickResult(m, s1, s2)}
                                       className={`px-2 py-0.5 rounded-md font-num text-[11px] font-semibold transition-colors ${
                                         isSelected
-                                          ? 'bg-[#14533C] text-white'
+                                          ? 'bg-[#B91C1C] text-white'
                                           : canScore
-                                          ? 'bg-[#F1EDE4] hover:bg-[#14533C] hover:text-white text-[#53605A]'
+                                          ? 'bg-[#F1EDE4] hover:bg-[#B91C1C] hover:text-white text-[#53605A]'
                                           : 'bg-[#FAF8F4] text-[#CCC5B6] cursor-default'
                                       }`}
                                     >
@@ -1527,7 +1527,7 @@ export default function TournamentDetailPage() {
                         key={rNum}
                         className="border border-[#E3DED2] rounded-xl p-4 bg-[#FAF8F4]/70 space-y-3"
                       >
-                        <h3 className="font-bold text-xs uppercase tracking-wider text-[#14533C]">
+                        <h3 className="font-bold text-xs uppercase tracking-wider text-[#B91C1C]">
                           {t.TournamentDetail.round} {rNum}
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
@@ -1543,9 +1543,9 @@ export default function TournamentDetailPage() {
                                 key={m.id}
                                 className={`bg-white border rounded-lg p-2.5 flex justify-between items-center gap-2 text-xs ${
                                   m.status === 'in_progress'
-                                    ? 'border-[#14533C] ring-1 ring-[#14533C]/15'
+                                    ? 'border-[#B91C1C] ring-1 ring-[#B91C1C]/15'
                                     : m.status === 'completed'
-                                    ? 'border-[#C5DDD0]'
+                                    ? 'border-[#FECACA]'
                                     : 'border-[#E3DED2]'
                                 }`}
                               >
@@ -1553,7 +1553,7 @@ export default function TournamentDetailPage() {
                                   <span
                                     className={
                                       m.winner_entry_id === m.entry1_id
-                                        ? 'font-bold text-[#14533C]'
+                                        ? 'font-bold text-[#B91C1C]'
                                         : 'text-[#18211D]'
                                     }
                                   >
@@ -1563,7 +1563,7 @@ export default function TournamentDetailPage() {
                                   <span
                                     className={
                                       m.winner_entry_id === m.entry2_id
-                                        ? 'font-bold text-[#14533C]'
+                                        ? 'font-bold text-[#B91C1C]'
                                         : 'text-[#18211D]'
                                     }
                                   >
@@ -1572,7 +1572,7 @@ export default function TournamentDetailPage() {
                                 </div>
 
                                 {m.status === 'walkover' ? (
-                                  <span className="font-num text-[#14533C] bg-[#EBF3EE] px-2 py-0.5 rounded font-bold shrink-0">
+                                  <span className="font-num text-[#B91C1C] bg-[#FEF2F2] px-2 py-0.5 rounded font-bold shrink-0">
                                     BYE (+1)
                                   </span>
                                 ) : (
@@ -1590,9 +1590,9 @@ export default function TournamentDetailPage() {
                                           onClick={() => handleQuickResult(m, s1, s2)}
                                           className={`px-2 py-0.5 rounded-md font-num text-[11px] font-semibold transition-colors ${
                                             isSelected
-                                              ? 'bg-[#14533C] text-white'
+                                              ? 'bg-[#B91C1C] text-white'
                                               : canScore
-                                              ? 'bg-[#F1EDE4] hover:bg-[#14533C] hover:text-white text-[#53605A]'
+                                              ? 'bg-[#F1EDE4] hover:bg-[#B91C1C] hover:text-white text-[#53605A]'
                                               : 'bg-[#FAF8F4] text-[#CCC5B6] cursor-default'
                                           }`}
                                         >
@@ -1633,7 +1633,7 @@ export default function TournamentDetailPage() {
                     <h3 className="text-xs font-bold uppercase tracking-wider text-[#53605A]">
                       {t.TournamentDetail.standingsTitle.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
                     </h3>
-                    <span className="font-num text-[11px] font-semibold text-[#14533C] bg-[#EBF3EE] border border-[#C5DDD0] px-2 py-0.5 rounded-md">
+                    <span className="font-num text-[11px] font-semibold text-[#B91C1C] bg-[#FEF2F2] border border-[#FECACA] px-2 py-0.5 rounded-md">
                       {t.TournamentDetail.qualifyingCount}: {predictedQualifiers.length}
                     </span>
                   </div>
@@ -1651,7 +1651,7 @@ export default function TournamentDetailPage() {
                             onClick={() => setSwissAdvanceCount(n)}
                             className={`px-2 py-0.5 rounded font-num font-bold transition-colors ${
                               swissAdvanceCount === n
-                                ? 'bg-[#14533C] text-white'
+                                ? 'bg-[#B91C1C] text-white'
                                 : 'bg-white border border-[#E3DED2] text-[#53605A]'
                             }`}
                           >
@@ -1678,12 +1678,12 @@ export default function TournamentDetailPage() {
                           return (
                             <tr
                               key={row.entry.id}
-                              className={qualifies ? 'bg-[#EBF3EE]/70 font-medium' : ''}
+                              className={qualifies ? 'bg-[#FEF2F2]/70 font-medium' : ''}
                             >
                               <td
                                 className={`p-2 font-num font-bold ${
                                   qualifies
-                                    ? 'border-l-2 border-l-[#14533C] text-[#14533C]'
+                                    ? 'border-l-2 border-l-[#B91C1C] text-[#B91C1C]'
                                     : 'text-[#828E88]'
                                 }`}
                               >
@@ -1724,7 +1724,7 @@ export default function TournamentDetailPage() {
                         type="button"
                         disabled={busyAction !== null}
                         onClick={handleAdvanceToStage2}
-                        className="w-full bg-[#14533C] text-white py-2 rounded-lg text-xs font-bold hover:bg-[#0E3E2C] disabled:opacity-50 transition-colors"
+                        className="w-full bg-[#B91C1C] text-white py-2 rounded-lg text-xs font-bold hover:bg-[#991B1B] disabled:opacity-50 transition-colors"
                       >
                         {t.TournamentDetail.createStage2Btn.replace(/^[^\wА-Яа-яЁё]+\s*/, '')} (
                         {predictedQualifiers.length})
@@ -1740,7 +1740,7 @@ export default function TournamentDetailPage() {
                   <h3 className="text-xs font-bold uppercase tracking-wider text-[#53605A]">
                     {t.TournamentDetail.tablesTitle.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
                   </h3>
-                  <span className="font-num text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[#F1EDE4] text-[#14533C]">
+                  <span className="font-num text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[#F1EDE4] text-[#B91C1C]">
                     {t.TournamentDetail.free}: {freeTableNumbers.length}/8
                   </span>
                 </div>
@@ -1753,14 +1753,14 @@ export default function TournamentDetailPage() {
                         key={tNum}
                         className={`border rounded-lg p-2.5 text-[11px] transition-colors ${
                           active
-                            ? 'bg-[#EBF3EE]/80 border-[#14533C]/45 border-t-2 border-t-[#14533C]'
+                            ? 'bg-[#FEF2F2]/80 border-[#B91C1C]/45 border-t-2 border-t-[#B91C1C]'
                             : 'bg-[#FAF8F4] border-[#E3DED2]'
                         }`}
                       >
                         <div className="flex justify-between items-center font-bold mb-1">
                           <span className="inline-flex items-center gap-1 font-num text-[#18211D]">
                             {active && (
-                              <CircleDot className="w-2.5 h-2.5 text-[#14533C] animate-pulse" />
+                              <CircleDot className="w-2.5 h-2.5 text-[#B91C1C] animate-pulse" />
                             )}
                             #{tNum}
                           </span>
@@ -1773,7 +1773,7 @@ export default function TournamentDetailPage() {
                               {t.TournamentDetail.releaseTable}
                             </button>
                           ) : !active ? (
-                            <span className="text-[10px] font-medium text-[#14533C]">
+                            <span className="text-[10px] font-medium text-[#B91C1C]">
                               {t.TournamentDetail.tableFree}
                             </span>
                           ) : null}
@@ -1821,7 +1821,7 @@ export default function TournamentDetailPage() {
                                   key={tNum}
                                   type="button"
                                   onClick={() => handleAssignTable(m.id, tNum)}
-                                  className="bg-[#14533C] text-white px-2 py-0.5 rounded font-num text-[10px] font-semibold hover:bg-[#0E3E2C] transition-colors"
+                                  className="bg-[#B91C1C] text-white px-2 py-0.5 rounded font-num text-[10px] font-semibold hover:bg-[#991B1B] transition-colors"
                                 >
                                   → #{tNum}
                                 </button>
@@ -1887,7 +1887,7 @@ export default function TournamentDetailPage() {
                 type="button"
                 disabled={busyAction !== null}
                 onClick={handleCsvImport}
-                className="bg-[#14533C] text-white px-4 py-1.5 rounded-lg text-xs font-semibold hover:bg-[#0E3E2C] disabled:opacity-50"
+                className="bg-[#B91C1C] text-white px-4 py-1.5 rounded-lg text-xs font-semibold hover:bg-[#991B1B] disabled:opacity-50"
               >
                 {t.TournamentDetail.csvImportBtn}
               </button>
@@ -1921,7 +1921,7 @@ export default function TournamentDetailPage() {
                     type="checkbox"
                     checked={checkInImmediately}
                     onChange={(e) => setCheckInImmediately(e.target.checked)}
-                    className="rounded border-[#CCC5B6] accent-[#14533C]"
+                    className="rounded border-[#CCC5B6] accent-[#B91C1C]"
                   />
                   <span>{t.TournamentDetail.checkInImmediately}</span>
                 </label>
@@ -1931,7 +1931,7 @@ export default function TournamentDetailPage() {
 
               <div className="flex items-center gap-3">
                 {regMessage && (
-                  <span className="text-sm font-medium text-[#14533C]">{regMessage}</span>
+                  <span className="text-sm font-medium text-[#B91C1C]">{regMessage}</span>
                 )}
                 <button
                   type="submit"
@@ -1940,7 +1940,7 @@ export default function TournamentDetailPage() {
                     !player1 ||
                     (tournament.type === 'doubles' && !player2)
                   }
-                  className="bg-[#14533C] text-white px-5 py-2 rounded-lg text-sm font-semibold hover:bg-[#0E3E2C] transition-colors disabled:opacity-50"
+                  className="bg-[#B91C1C] text-white px-5 py-2 rounded-lg text-sm font-semibold hover:bg-[#991B1B] transition-colors disabled:opacity-50"
                 >
                   {t.TournamentDetail.registerBtn}
                 </button>
@@ -1973,7 +1973,7 @@ export default function TournamentDetailPage() {
               {t.TournamentDetail.totalRegistered}:{' '}
               <strong className="font-num text-[#18211D]">{entries.length}</strong>
             </span>
-            <span className="px-3 py-1 bg-[#EBF3EE] text-[#14533C] border border-[#C5DDD0] rounded-full font-medium">
+            <span className="px-3 py-1 bg-[#FEF2F2] text-[#B91C1C] border border-[#FECACA] rounded-full font-medium">
               {t.TournamentDetail.checkedInCount}:{' '}
               <strong className="font-num">{checkedInEntries.length}</strong>
             </span>
@@ -2017,14 +2017,14 @@ export default function TournamentDetailPage() {
                     {entry.final_placement === 3 && '🥉 '}
                     {formatEntryName(entry)}
                   </td>
-                  <td className="p-3 font-num font-semibold text-[#14533C]">
+                  <td className="p-3 font-num font-semibold text-[#B91C1C]">
                     {entry.seed_elo}
                   </td>
                   <td className="p-3">
                     <span
                       className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
                         entry.attendance === 'checked_in'
-                          ? 'bg-[#EBF3EE] text-[#14533C] border-[#C5DDD0]'
+                          ? 'bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA]'
                           : entry.attendance === 'no_show'
                           ? 'bg-[#FBECE9] text-[#C2412D] border-[#F0C9C2]'
                           : 'bg-[#F1EDE4] text-[#53605A] border-[#E3DED2]'
@@ -2040,8 +2040,8 @@ export default function TournamentDetailPage() {
                         onClick={() => handleAttendanceChange(entry.id, 'checked_in')}
                         className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
                           entry.attendance === 'checked_in'
-                            ? 'bg-[#14533C] text-white'
-                            : 'bg-[#F1EDE4] hover:bg-[#EBF3EE] text-[#53605A]'
+                            ? 'bg-[#B91C1C] text-white'
+                            : 'bg-[#F1EDE4] hover:bg-[#FEF2F2] text-[#53605A]'
                         }`}
                       >
                         <Check className="w-3 h-3" />

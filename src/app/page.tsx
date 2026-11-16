@@ -12,7 +12,7 @@ interface TournamentWithWinners extends Tournament {
 }
 
 const STATUS_STYLE: Record<TournamentStatus, string> = {
-  in_progress: 'bg-[#EBF3EE] text-[#14533C] border-[#BBD8C7]',
+  in_progress: 'bg-[#FEF2F2] text-[#B91C1C] border-[#FCA5A5]',
   registration_open: 'bg-[#FEF7E6] text-[#92580A] border-[#EDD6A3]',
   check_in: 'bg-[#EDF4FA] text-[#1D527C] border-[#C2D8EC]',
   scheduled: 'bg-[#F1EDE4] text-[#53605A] border-[#DCD5C7]',
@@ -57,14 +57,14 @@ export default function HomePage() {
       <Link
         key={item.id}
         href={`/tournaments/${item.id}`}
-        className={`group block bg-white border rounded-xl p-5 transition-all duration-150 shadow-[0_1px_2px_rgba(20,30,25,0.04)] hover:shadow-[0_4px_12px_rgba(20,30,25,0.06)] hover:border-[#14533C]/45 ${
-          isLive ? 'border-[#14533C]/40 border-l-4 border-l-[#14533C]' : 'border-[#E3DED2]'
+        className={`group block bg-white border rounded-xl p-5 transition-all duration-150 shadow-[0_1px_2px_rgba(20,30,25,0.04)] hover:shadow-[0_4px_12px_rgba(20,30,25,0.06)] hover:border-[#B91C1C]/45 ${
+          isLive ? 'border-[#B91C1C]/40 border-l-4 border-l-[#B91C1C]' : 'border-[#E3DED2]'
         }`}
       >
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
           <div className="space-y-2 min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2.5">
-              <h2 className="text-lg font-bold text-[#18211D] group-hover:text-[#14533C] transition-colors">
+              <h2 className="text-lg font-bold text-[#18211D] group-hover:text-[#B91C1C] transition-colors">
                 {item.title}
               </h2>
               <span
@@ -73,7 +73,7 @@ export default function HomePage() {
                 }`}
               >
                 {isLive && (
-                  <CircleDot className="w-3 h-3 text-[#14533C] animate-pulse" />
+                  <CircleDot className="w-3 h-3 text-[#B91C1C] animate-pulse" />
                 )}
                 {t.Tournaments.status[item.status]}
               </span>
@@ -104,7 +104,7 @@ export default function HomePage() {
             )}
           </div>
 
-          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-semibold text-[#14533C] opacity-70 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all shrink-0 pt-1">
+          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-semibold text-[#B91C1C] opacity-70 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all shrink-0 pt-1">
             <span>{locale === 'ru' ? 'Открыть' : 'Open'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </span>
@@ -144,7 +144,7 @@ export default function HomePage() {
       {/* Compact club header strip */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-5 border-b border-[#E3DED2]">
         <div className="space-y-1">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-[#14533C]">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-[#B91C1C]">
             Nazarbayev University Table Tennis Club
           </p>
           <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#18211D]">
@@ -154,7 +154,7 @@ export default function HomePage() {
         <div className="flex items-center gap-2 text-xs text-[#53605A]">
           <span className="px-2.5 py-1 rounded-md bg-white border border-[#E3DED2] font-num">
             {locale === 'ru' ? 'Активных' : 'Active'}:{' '}
-            <strong className="text-[#14533C]">{upcoming.length}</strong>
+            <strong className="text-[#B91C1C]">{upcoming.length}</strong>
           </span>
           <span className="px-2.5 py-1 rounded-md bg-white border border-[#E3DED2] font-num">
             {locale === 'ru' ? 'Завершено' : 'Finished'}:{' '}

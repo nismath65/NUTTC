@@ -36,7 +36,7 @@
   select:focus-visible,
   textarea:focus-visible,
   button:focus-visible {
-    outline: 2px solid var(--club-green);
+    outline: 2px solid var(--club-red);
     outline-offset: 1px;
   }
 }

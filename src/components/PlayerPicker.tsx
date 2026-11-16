@@ -94,10 +94,10 @@ export default function PlayerPicker({
       </div>
 
       {selectedPlayer ? (
-        <div className="bg-[#EBF3EE] border border-[#C5DDD0] rounded-lg p-3 flex justify-between items-center">
+        <div className="bg-[#FEF2F2] border border-[#FECACA] rounded-lg p-3 flex justify-between items-center">
           <div>
             <p className="font-semibold text-[#18211D]">{selectedPlayer.full_name}</p>
-            <p className="text-xs text-[#14533C]">
+            <p className="text-xs text-[#B91C1C]">
               {selectedPlayer.university_id ? (
                 <span className="font-num mr-1.5">ID {selectedPlayer.university_id} •</span>
               ) : null}
@@ -125,7 +125,7 @@ export default function PlayerPicker({
                 key={p.id}
                 type="button"
                 onClick={() => onSelect(p)}
-                className="w-full text-left px-3 py-2 text-sm hover:bg-[#EBF3EE] transition-colors flex justify-between items-center gap-2"
+                className="w-full text-left px-3 py-2 text-sm hover:bg-[#FEF2F2] transition-colors flex justify-between items-center gap-2"
               >
                 <span className="truncate">
                   <span className="font-medium text-[#18211D]">{p.full_name}</span>{' '}
@@ -133,7 +133,7 @@ export default function PlayerPicker({
                     <span className="font-num text-[#828E88] text-xs">({p.university_id})</span>
                   )}
                 </span>
-                <span className="font-num text-xs font-semibold text-[#14533C] shrink-0">
+                <span className="font-num text-xs font-semibold text-[#B91C1C] shrink-0">
                   {p.elo_rating}
                 </span>
               </button>
@@ -149,7 +149,7 @@ export default function PlayerPicker({
               setNewName(search);
               setIsCreatingNew(true);
             }}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#14533C] hover:underline"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#B91C1C] hover:underline"
           >
             <UserPlus className="w-3.5 h-3.5" />
             <span>{t.TournamentDetail.notInListCreateNew.replace(/^\+\s*/, '')}</span>
@@ -216,7 +216,7 @@ export default function PlayerPicker({
           <button
             type="button"
             onClick={handleCreateNewPlayer}
-            className="w-full bg-[#14533C] text-white py-2 rounded-lg text-xs font-semibold hover:bg-[#0E3E2C] transition-colors"
+            className="w-full bg-[#B91C1C] text-white py-2 rounded-lg text-xs font-semibold hover:bg-[#991B1B] transition-colors"
           >
             {t.Staff.addPlayerBtn}
           </button>

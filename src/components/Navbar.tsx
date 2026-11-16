@@ -22,7 +22,7 @@ export default function Navbar() {
         <Link href="/" className="flex items-center gap-2.5 group shrink-0">
           <ClubEmblem className="w-7 h-7 transition-transform duration-200 group-hover:-rotate-6" />
           <div className="flex items-baseline gap-2">
-            <span className="text-lg font-extrabold tracking-tight text-[#14533C]">
+            <span className="text-lg font-extrabold tracking-tight text-[#B91C1C]">
               NUTTC
             </span>
             <span className="hidden md:inline-block text-[11px] font-medium text-[#828E88] border-l border-[#E3DED2] pl-2">
@@ -37,7 +37,7 @@ export default function Navbar() {
               href="/"
               className={`px-2.5 sm:px-3 py-1 rounded-md text-xs sm:text-sm font-medium transition-colors ${
                 isTournamentsActive
-                  ? 'bg-white text-[#14533C] font-semibold shadow-[0_1px_2px_rgba(20,30,25,0.06)]'
+                  ? 'bg-white text-[#B91C1C] font-semibold shadow-[0_1px_2px_rgba(20,30,25,0.06)]'
                   : 'text-[#53605A] hover:text-[#18211D]'
               }`}
             >
@@ -47,7 +47,7 @@ export default function Navbar() {
               href="/leaderboard"
               className={`px-2.5 sm:px-3 py-1 rounded-md text-xs sm:text-sm font-medium transition-colors ${
                 isLeaderboardActive
-                  ? 'bg-white text-[#14533C] font-semibold shadow-[0_1px_2px_rgba(20,30,25,0.06)]'
+                  ? 'bg-white text-[#B91C1C] font-semibold shadow-[0_1px_2px_rgba(20,30,25,0.06)]'
                   : 'text-[#53605A] hover:text-[#18211D]'
               }`}
             >
@@ -61,8 +61,8 @@ export default function Navbar() {
                 href="/staff"
                 className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 sm:px-3 py-1.5 rounded-lg border transition-colors ${
                   isStaffActive
-                    ? 'bg-[#14533C] text-white border-[#14533C]'
-                    : 'bg-[#EBF3EE] text-[#14533C] border-[#C5DDD0] hover:bg-[#DCEBE3]'
+                    ? 'bg-[#B91C1C] text-white border-[#B91C1C]'
+                    : 'bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA] hover:bg-[#FEE2E2]'
                 }`}
               >
                 <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
@@ -105,7 +105,7 @@ export default function Navbar() {
               onClick={() => setLocale('ru')}
               className={`px-2 py-1.5 transition-colors ${
                 locale === 'ru'
-                  ? 'bg-[#14533C] text-white'
+                  ? 'bg-[#B91C1C] text-white'
                   : 'text-[#53605A] hover:text-[#18211D]'
               }`}
             >
@@ -116,7 +116,7 @@ export default function Navbar() {
               onClick={() => setLocale('en')}
               className={`px-2 py-1.5 transition-colors ${
                 locale === 'en'
-                  ? 'bg-[#14533C] text-white'
+                  ? 'bg-[#B91C1C] text-white'
                   : 'text-[#53605A] hover:text-[#18211D]'
               }`}
             >

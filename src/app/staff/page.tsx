@@ -70,7 +70,7 @@ export default function StaffDashboardPage() {
         <p className="font-semibold text-[#18211D]">Доступ только для Жюри / Staff Access Only</p>
         <Link
           href="/login"
-          className="inline-block bg-[#14533C] text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#0E3E2C]"
+          className="inline-block bg-[#B91C1C] text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-[#991B1B]"
         >
           Войти / Login
         </Link>
@@ -288,7 +288,7 @@ export default function StaffDashboardPage() {
   return (
     <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-8">
       <div className="pb-5 border-b border-[#E3DED2] space-y-1">
-        <p className="text-[11px] font-bold uppercase tracking-widest text-[#14533C]">
+        <p className="text-[11px] font-bold uppercase tracking-widest text-[#B91C1C]">
           NUTTC Operations
         </p>
         <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#18211D]">
@@ -391,13 +391,13 @@ export default function StaffDashboardPage() {
           <div className="md:col-span-2 flex flex-wrap items-center gap-4 pt-1">
             <button
               type="submit"
-              className="inline-flex items-center gap-1.5 bg-[#14533C] text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-[#0E3E2C] transition-colors"
+              className="inline-flex items-center gap-1.5 bg-[#B91C1C] text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-[#991B1B] transition-colors"
             >
               <Plus className="w-4 h-4" />
               <span>{t.Staff.createBtn}</span>
             </button>
             {tournamentMsg && (
-              <span className="text-sm font-medium text-[#14533C]">{tournamentMsg}</span>
+              <span className="text-sm font-medium text-[#B91C1C]">{tournamentMsg}</span>
             )}
           </div>
         </form>
@@ -539,7 +539,7 @@ export default function StaffDashboardPage() {
         </div>
 
         {playerMsg && (
-          <p className="text-sm font-medium text-[#14533C]">{playerMsg}</p>
+          <p className="text-sm font-medium text-[#B91C1C]">{playerMsg}</p>
         )}
 
         <div className="relative max-w-xs">
@@ -592,7 +592,7 @@ export default function StaffDashboardPage() {
                         <button
                           type="button"
                           onClick={() => handleUpdateElo(p)}
-                          className="inline-flex items-center gap-1 text-xs bg-[#14533C] text-white px-2.5 py-1 rounded-lg font-semibold hover:bg-[#0E3E2C]"
+                          className="inline-flex items-center gap-1 text-xs bg-[#B91C1C] text-white px-2.5 py-1 rounded-lg font-semibold hover:bg-[#991B1B]"
                         >
                           <Check className="w-3 h-3" />
                           <span>{t.Staff.updateEloBtn}</span>

@@ -43,7 +43,7 @@ function EloSparkline({ logs }: { logs: RatingLog[] }) {
       <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-11 overflow-visible">
         <polyline
           fill="none"
-          stroke={trendingUp ? '#14533C' : '#C2412D'}
+          stroke={trendingUp ? '#B91C1C' : '#C2412D'}
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -53,7 +53,7 @@ function EloSparkline({ logs }: { logs: RatingLog[] }) {
           cx={last[0]}
           cy={last[1]}
           r="3.2"
-          fill={trendingUp ? '#14533C' : '#C2412D'}
+          fill={trendingUp ? '#B91C1C' : '#C2412D'}
           stroke="#FFFFFF"
           strokeWidth="1.2"
         />
@@ -128,7 +128,7 @@ export default function LeaderboardPage() {
     <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 pb-5 border-b border-[#E3DED2]">
         <div className="space-y-1">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-[#14533C]">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-[#B91C1C]">
             NUTTC Elo Standings
           </p>
           <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#18211D]">
@@ -190,7 +190,7 @@ export default function LeaderboardPage() {
                       onClick={() => handleSelectPlayer(p)}
                       className={`cursor-pointer transition-colors ${
                         isSelected
-                          ? 'bg-[#EBF3EE]'
+                          ? 'bg-[#FEF2F2]'
                           : 'hover:bg-[#FAF8F4]'
                       }`}
                     >
@@ -222,11 +222,11 @@ export default function LeaderboardPage() {
                           {t.Staff.categories[p.category as PlayerCategory]}
                         </span>
                       </td>
-                      <td className="py-3 px-3 text-right font-num font-bold text-[#14533C] text-base">
+                      <td className="py-3 px-3 text-right font-num font-bold text-[#B91C1C] text-base">
                         {p.elo_rating}
                       </td>
                       <td className="py-3 px-3 text-center font-num text-xs text-[#53605A]">
-                        <span className="text-[#14533C] font-semibold">{p.wins}W</span>
+                        <span className="text-[#B91C1C] font-semibold">{p.wins}W</span>
                         <span className="text-[#828E88] mx-1">-</span>
                         <span>{p.losses}L</span>
                       </td>
@@ -274,9 +274,9 @@ export default function LeaderboardPage() {
             </p>
           ) : (
             <div className="space-y-3.5">
-              <div className="bg-[#EBF3EE] p-3.5 rounded-lg border border-[#C5DDD0] space-y-1">
+              <div className="bg-[#FEF2F2] p-3.5 rounded-lg border border-[#FECACA] space-y-1">
                 <p className="font-bold text-[#18211D]">{selectedPlayer.full_name}</p>
-                <div className="flex items-center justify-between text-xs text-[#14533C]">
+                <div className="flex items-center justify-between text-xs text-[#B91C1C]">
                   <span className="font-num">
                     Elo <strong className="text-sm">{selectedPlayer.elo_rating}</strong>
                   </span>
@@ -313,7 +313,7 @@ export default function LeaderboardPage() {
                           <div
                             className={`inline-flex items-center gap-1 font-num font-bold ${
                               diff > 0
-                                ? 'text-[#14533C]'
+                                ? 'text-[#B91C1C]'
                                 : diff < 0
                                 ? 'text-[#C2412D]'
                                 : 'text-[#53605A]'
