@@ -29,13 +29,13 @@ import {
   getTournamentLifecyclePermissions,
   updateTournamentDetails,
 } from '@/lib/tournamentEngine';
+import { getDefaultLeagueNames, getUiFormat, UiStageFormat } from '@/lib/leagueConfig';
 import { useLanguage } from '@/components/LanguageProvider';
 import { useAuth } from '@/components/AuthProvider';
 import {
   Player,
   PlayerCategory,
   MatchType,
-  StageFormat,
   Tournament,
   TournamentStage,
   Match,
@@ -65,7 +65,7 @@ export default function StaffDashboardPage() {
   const [eventDate, setEventDate] = useState('');
   const [matchType, setMatchType] = useState<MatchType>('singles');
   const [bestOf, setBestOf] = useState<number>(3);
-  const [initialFormat, setInitialFormat] = useState<StageFormat>('single_elimination');
+  const [initialFormat, setInitialFormat] = useState<UiStageFormat>('single_elimination');
   const [tournamentMsg, setTournamentMsg] = useState<string | null>(null);
 
   const [tournaments, setTournaments] = useState<ManagedTournament[]>([]);
@@ -76,7 +76,7 @@ export default function StaffDashboardPage() {
   const [editDescription, setEditDescription] = useState('');
   const [editMatchType, setEditMatchType] = useState<MatchType>('singles');
   const [editBestOf, setEditBestOf] = useState<number>(3);
-  const [editFormat, setEditFormat] = useState<StageFormat>('single_elimination');
+  const [editFormat, setEditFormat] = useState<UiStageFormat>('single_elimination');
   const [editIsRated, setEditIsRated] = useState<boolean>(true);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [busyTournamentId, setBusyTournamentId] = useState<string | null>(null);
@@ -98,7 +98,7 @@ export default function StaffDashboardPage() {
     const { data } = await supabase
       .from('tournaments')
       .select(
-        '*, stages:tournament_stages(id, stage_order, format, status), entries:tournament_entries(id), matches:matches(id, status)'
+        '*, stages:tournament_stages(id, stage_order, format, config, status), entries:tournament_entries(id), matches:matches(id, status)'
       )
       .order('event_date', { ascending: false });
     if (data) setTournaments(data as ManagedTournament[]);
@@ -166,11 +166,15 @@ export default function StaffDashboardPage() {
       return;
     }
 
+    const isLeague = initialFormat === 'club_league';
     const { error: sError } = await supabase.from('tournament_stages').insert({
       tournament_id: newTournament.id,
       stage_order: 1,
-      name: 'Stage 1',
-      format: initialFormat,
+      name: isLeague ? 'Leagues (Divisions)' : 'Stage 1',
+      format: isLeague ? 'round_robin' : initialFormat,
+      config: isLeague
+        ? { league_mode: true, group_names: getDefaultLeagueNames(locale) }
+        : {},
       status: 'pending',
     });
 
@@ -194,7 +198,7 @@ export default function StaffDashboardPage() {
     setEditDescription(item.description || '');
     setEditMatchType(item.type);
     setEditBestOf(item.best_of);
-    setEditFormat(stage1?.format || 'single_elimination');
+    setEditFormat(getUiFormat(stage1));
     setEditIsRated(item.is_rated);
     setManageMsg(null);
     setConfirmDeleteId(null);
@@ -206,6 +210,18 @@ export default function StaffDashboardPage() {
     setManageMsg(null);
     try {
       const stage1 = [...(item.stages || [])].sort((a, b) => a.stage_order - b.stage_order)[0];
+      const isLeague = editFormat === 'club_league';
+      const existingConfig = (stage1?.config as Record<string, unknown>) || {};
+      const nextConfig = isLeague
+        ? {
+            ...existingConfig,
+            league_mode: true,
+            group_names:
+              (existingConfig.group_names as Record<string, string>) ||
+              getDefaultLeagueNames(locale),
+          }
+        : { ...existingConfig, league_mode: false };
+
       await updateTournamentDetails(item.id, {
         title: editTitle,
         description: editDescription.trim() || null,
@@ -214,7 +230,8 @@ export default function StaffDashboardPage() {
         best_of: editBestOf,
         is_rated: editIsRated,
         stage1Id: stage1?.id,
-        stage1Format: editFormat,
+        stage1Format: isLeague ? 'round_robin' : editFormat,
+        stage1Config: nextConfig,
       });
       setEditingTournamentId(null);
       setManageMsg({
@@ -534,12 +551,13 @@ export default function StaffDashboardPage() {
             </label>
             <select
               value={initialFormat}
-              onChange={(e) => setInitialFormat(e.target.value as StageFormat)}
+              onChange={(e) => setInitialFormat(e.target.value as UiStageFormat)}
               className="w-full border border-[#E3DED2] bg-[#FAF8F4] rounded-lg px-3 py-2 text-sm"
             >
               <option value="single_elimination">{t.Staff.formats.single_elimination}</option>
               <option value="double_elimination">{t.Staff.formats.double_elimination}</option>
               <option value="round_robin">{t.Staff.formats.round_robin}</option>
+              <option value="club_league">{t.Staff.formats.club_league}</option>
               <option value="swiss">{t.Staff.formats.swiss}</option>
             </select>
           </div>
@@ -802,7 +820,7 @@ export default function StaffDashboardPage() {
                         <select
                           disabled={!perms.canEditStructure}
                           value={editFormat}
-                          onChange={(e) => setEditFormat(e.target.value as StageFormat)}
+                          onChange={(e) => setEditFormat(e.target.value as UiStageFormat)}
                           className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs disabled:opacity-50"
                         >
                           <option value="single_elimination">
@@ -812,6 +830,7 @@ export default function StaffDashboardPage() {
                             {t.Staff.formats.double_elimination}
                           </option>
                           <option value="round_robin">{t.Staff.formats.round_robin}</option>
+                          <option value="club_league">{t.Staff.formats.club_league}</option>
                           <option value="swiss">{t.Staff.formats.swiss}</option>
                         </select>
                       </div>

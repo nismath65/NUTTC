@@ -11,12 +11,15 @@ import {
   buildSingleElimination,
   buildDoubleElimination,
   buildRoundRobin,
+  buildRoundRobinFromGroups,
+  buildGroupRoundRobinMatches,
   buildSwissRound,
 } from './bracketBuilder';
 
 export { findStageIntegrityIssues } from './bracketBuilder';
 
 export type SeedingMode = 'elo' | 'manual' | 'random';
+export type RoundRobinDistribution = 'snake' | 'sequential' | 'custom';
 
 export interface StandingRow {
   entry: TournamentEntry;
@@ -145,7 +148,11 @@ export async function generateStageDraw(
   groupCount: number = 2,
   preserveOrder: boolean = false,
   seedingMode: SeedingMode = 'elo',
-  options?: { preliminary?: boolean }
+  options?: {
+    preliminary?: boolean;
+    groupDistribution?: RoundRobinDistribution;
+    customGroups?: Record<string, number>;
+  }
 ) {
   if (entriesToUse.length < 2) {
     throw new Error('Минимум 2 участника / Need at least 2 entries');
@@ -155,9 +162,13 @@ export async function generateStageDraw(
 
   if (!preserveOrder) {
     if (seedingMode === 'manual') {
-      sorted.sort(
-        (a, b) => (a.seed_number ?? 9999) - (b.seed_number ?? 9999) || b.seed_elo - a.seed_elo
-      );
+      const displayOrder = new Map(entriesToUse.map((e, idx) => [e.id, idx]));
+      sorted.sort((a, b) => {
+        const sA = a.seed_number ?? 100000 + (displayOrder.get(a.id) ?? 0);
+        const sB = b.seed_number ?? 100000 + (displayOrder.get(b.id) ?? 0);
+        if (sA !== sB) return sA - sB;
+        return (displayOrder.get(a.id) ?? 0) - (displayOrder.get(b.id) ?? 0);
+      });
     } else if (seedingMode === 'random') {
       // Fisher-Yates unbiased shuffle
       for (let i = sorted.length - 1; i > 0; i--) {
@@ -176,7 +187,33 @@ export async function generateStageDraw(
   } else if (format === 'double_elimination') {
     rows = buildDoubleElimination(tournamentId, stageId, sorted);
   } else if (format === 'round_robin') {
-    rows = buildRoundRobin(tournamentId, stageId, sorted, groupCount);
+    if (options?.groupDistribution === 'custom' && options.customGroups) {
+      const bucketMap = new Map<number, TournamentEntry[]>();
+      sorted.forEach((entry, idx) => {
+        const fallbackGroup = (idx % Math.max(1, groupCount)) + 1;
+        const gNum = Math.max(1, options.customGroups![entry.id] || fallbackGroup);
+        bucketMap.set(gNum, [...(bucketMap.get(gNum) || []), entry]);
+      });
+      const explicitGroups = Array.from(bucketMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([groupNumber, groupEntries]) => ({ groupNumber, entries: groupEntries }));
+      rows = buildRoundRobinFromGroups(tournamentId, stageId, explicitGroups);
+      if (rows.length === 0) {
+        throw new Error(
+          'В каждой группе должно быть минимум 2 участника / Each group needs at least 2 players'
+        );
+      }
+    } else {
+      const dist =
+        options?.groupDistribution === 'sequential'
+          ? 'sequential'
+          : options?.groupDistribution === 'snake'
+          ? 'snake'
+          : seedingMode === 'manual'
+          ? 'sequential'
+          : 'snake';
+      rows = buildRoundRobin(tournamentId, stageId, sorted, groupCount, undefined, dist);
+    }
   } else {
     rows = buildSwissRound(tournamentId, stageId, sorted, []);
   }
@@ -214,6 +251,94 @@ export async function generateStageDraw(
   }
 }
 
+/**
+ * Moves (or adds) an entry directly into targetGroupNumber in a Round Robin / Club League stage
+ * and regenerates circle-method pairings for the affected group(s) as long as they haven't started.
+ */
+export async function moveEntryBetweenRoundRobinGroups(
+  tournamentId: string,
+  stageId: string,
+  entryId: string,
+  targetGroupNumber: number | null,
+  allActiveEntries: TournamentEntry[]
+) {
+  const { data, error } = await supabase.from('matches').select('*').eq('stage_id', stageId);
+  if (error) throw new Error(error.message);
+  const stageMatches = (data as Match[]) || [];
+
+  const entryMap = new Map(allActiveEntries.map((e) => [e.id, e]));
+  const rosterByGroup = new Map<number, string[]>();
+  let sourceGroup: number | null = null;
+
+  stageMatches.forEach((m) => {
+    const g = m.group_number || 1;
+    if (!rosterByGroup.has(g)) rosterByGroup.set(g, []);
+    const list = rosterByGroup.get(g)!;
+    if (m.entry1_id) {
+      if (!list.includes(m.entry1_id)) list.push(m.entry1_id);
+      if (m.entry1_id === entryId) sourceGroup = g;
+    }
+    if (m.entry2_id) {
+      if (!list.includes(m.entry2_id)) list.push(m.entry2_id);
+      if (m.entry2_id === entryId) sourceGroup = g;
+    }
+  });
+
+  if (sourceGroup === targetGroupNumber) return;
+
+  const affectedGroups = new Set<number>();
+  if (sourceGroup !== null) affectedGroups.add(sourceGroup);
+  if (targetGroupNumber !== null) affectedGroups.add(targetGroupNumber);
+
+  const startedAffected = stageMatches.some(
+    (m) =>
+      affectedGroups.has(m.group_number || 1) &&
+      (m.status === 'completed' || m.status === 'in_progress')
+  );
+  if (startedAffected) {
+    throw new Error(
+      'Нельзя менять состав группы, в которой уже идут или сыграны матчи / Cannot edit a group that already has live or completed matches'
+    );
+  }
+
+  if (sourceGroup !== null) {
+    rosterByGroup.set(
+      sourceGroup,
+      (rosterByGroup.get(sourceGroup) || []).filter((id) => id !== entryId)
+    );
+  }
+  if (targetGroupNumber !== null) {
+    const currentTarget = rosterByGroup.get(targetGroupNumber) || [];
+    if (!currentTarget.includes(entryId)) {
+      rosterByGroup.set(targetGroupNumber, [...currentTarget, entryId]);
+    }
+  }
+
+  const newRows: MatchRow[] = [];
+  for (const gNum of affectedGroups) {
+    const { error: delErr } = await supabase
+      .from('matches')
+      .delete()
+      .eq('stage_id', stageId)
+      .eq('group_number', gNum);
+    if (delErr) throw new Error(delErr.message);
+
+    const gEntries = (rosterByGroup.get(gNum) || [])
+      .map((id) => entryMap.get(id))
+      .filter((e): e is TournamentEntry => Boolean(e))
+      .sort((a, b) => (a.seed_number ?? 9999) - (b.seed_number ?? 9999) || b.seed_elo - a.seed_elo);
+
+    if (gEntries.length >= 2) {
+      newRows.push(...buildGroupRoundRobinMatches(tournamentId, stageId, gNum, gEntries));
+    }
+  }
+
+  if (newRows.length > 0) {
+    const { error: insErr } = await supabase.from('matches').insert(newRows);
+    if (insErr) throw new Error(insErr.message);
+  }
+}
+
 const CONCURRENT_DRAW_MSG =
   'Сетка уже формируется с другого устройства/клика — обновите страницу / Draw was generated concurrently — refresh the page';
 
@@ -242,7 +367,10 @@ export async function generateNextSwissRound(
     );
   }
 
-  const rows = buildSwissRound(tournamentId, stageId, checkedInEntries, stageMatches);
+  const ordered = [...checkedInEntries].sort(
+    (a, b) => (a.seed_number ?? 9999) - (b.seed_number ?? 9999) || b.seed_elo - a.seed_elo
+  );
+  const rows = buildSwissRound(tournamentId, stageId, ordered, stageMatches);
   if (rows.length === 0) return;
   const { error: insError } = await supabase.from('matches').insert(rows);
   if (insError) {
@@ -736,11 +864,46 @@ export async function createAndAdvanceToStage2(
   return stage2Id;
 }
 
+export function sortReadyQueueBalanced(readyMatches: Match[], allStageMatches: Match[]): Match[] {
+  const groupLoad = new Map<number, number>();
+  const entryLoad = new Map<string, number>();
+
+  allStageMatches.forEach((m) => {
+    if (m.status === 'completed' || m.status === 'in_progress') {
+      const g = m.group_number || 1;
+      groupLoad.set(g, (groupLoad.get(g) || 0) + 1);
+      if (m.entry1_id) entryLoad.set(m.entry1_id, (entryLoad.get(m.entry1_id) || 0) + 1);
+      if (m.entry2_id) entryLoad.set(m.entry2_id, (entryLoad.get(m.entry2_id) || 0) + 1);
+    }
+  });
+
+  return [...readyMatches].sort((a, b) => {
+    if (a.round_number !== b.round_number) return a.round_number - b.round_number;
+
+    const gA = a.group_number || 1;
+    const gB = b.group_number || 1;
+    const loadDiff = (groupLoad.get(gA) || 0) - (groupLoad.get(gB) || 0);
+    if (loadDiff !== 0) return loadDiff;
+
+    const eLoadA =
+      (a.entry1_id ? entryLoad.get(a.entry1_id) || 0 : 0) +
+      (a.entry2_id ? entryLoad.get(a.entry2_id) || 0 : 0);
+    const eLoadB =
+      (b.entry1_id ? entryLoad.get(b.entry1_id) || 0 : 0) +
+      (b.entry2_id ? entryLoad.get(b.entry2_id) || 0 : 0);
+    if (eLoadA !== eLoadB) return eLoadA - eLoadB;
+
+    if (gA !== gB) return gA - gB;
+    return a.match_number - b.match_number;
+  });
+}
+
 export async function completeTournamentAndAssignMedals(
   tournamentId: string,
   stageMatches: Match[],
   format: StageFormat,
-  entries: TournamentEntry[]
+  entries: TournamentEntry[],
+  options?: { leagueMode?: boolean }
 ) {
   await supabase
     .from('tournament_entries')
@@ -782,6 +945,14 @@ export async function completeTournamentAndAssignMedals(
           lbFinal.winner_entry_id === lbFinal.entry1_id ? lbFinal.entry2_id : lbFinal.entry1_id;
       }
     }
+  } else if (options?.leagueMode) {
+    const groupStandings = computeStageStandings(stageMatches, entries, false);
+    const topLeagueNum =
+      groupStandings.length > 0 ? Math.min(...groupStandings.map((r) => r.groupNumber)) : 1;
+    const superLeague = groupStandings.filter((r) => r.groupNumber === topLeagueNum);
+    firstId = superLeague[0]?.entry.id || null;
+    secondId = superLeague[1]?.entry.id || null;
+    thirdId = superLeague[2]?.entry.id || null;
   } else {
     const standings = computeStageStandings(stageMatches, entries, true);
     firstId = standings[0]?.entry.id || null;
@@ -844,6 +1015,7 @@ export async function updateTournamentDetails(
     is_rated?: boolean;
     stage1Id?: string;
     stage1Format?: StageFormat;
+    stage1Config?: Record<string, unknown>;
   }
 ) {
   const [{ data: tRow, error: tFetchErr }, { data: mRows, error: mFetchErr }] =
@@ -887,9 +1059,13 @@ export async function updateTournamentDetails(
   if (updErr) throw new Error(updErr.message);
 
   if (perms.canEditStructure && updates.stage1Id && updates.stage1Format) {
+    const stageUpdate: Record<string, unknown> = { format: updates.stage1Format };
+    if (updates.stage1Config !== undefined) {
+      stageUpdate.config = updates.stage1Config;
+    }
     const { error: sErr } = await supabase
       .from('tournament_stages')
-      .update({ format: updates.stage1Format })
+      .update(stageUpdate)
       .eq('id', updates.stage1Id);
     if (sErr) throw new Error(sErr.message);
   }

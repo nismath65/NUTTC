@@ -39,6 +39,7 @@ import {
   undoMatchResult,
   swapTwoEntriesInStage,
   assignEntryToMatchSlot,
+  moveEntryBetweenRoundRobinGroups,
   createAndAdvanceToStage2,
   computeStageStandings,
   completeTournamentAndAssignMedals,
@@ -46,8 +47,18 @@ import {
   getTournamentLifecyclePermissions,
   updateTournamentDetails,
   deleteUnstartedTournament,
+  sortReadyQueueBalanced,
   SeedingMode,
+  RoundRobinDistribution,
 } from '@/lib/tournamentEngine';
+import {
+  getDefaultLeagueNames,
+  getGroupDisplayName,
+  getStageCustomGroups,
+  getUiFormat,
+  isLeagueStage,
+  UiStageFormat,
+} from '@/lib/leagueConfig';
 import { parseCsvParticipantsBatch } from '@/lib/playerLevels';
 import {
   Tournament,
@@ -90,7 +101,7 @@ export default function TournamentDetailPage() {
   const isJuryMode = isStaff && juryViewEnabled;
 
   const [showSidebar, setShowSidebar] = useState(true);
-  const [fastTestMode, setFastTestMode] = useState(true);
+  const [fastTestMode, setFastTestMode] = useState(false);
   const [manualSlotEditMode, setManualSlotEditMode] = useState(false);
   const [showSwapBar, setShowSwapBar] = useState(false);
   const [showCsvImport, setShowCsvImport] = useState(false);
@@ -98,6 +109,7 @@ export default function TournamentDetailPage() {
   const [applyLevelToUnplayed, setApplyLevelToUnplayed] = useState(true);
   const [participantSearch, setParticipantSearch] = useState('');
   const [seedDrafts, setSeedDrafts] = useState<Record<string, string>>({});
+  const [queueGroupFilter, setQueueGroupFilter] = useState<number | 'all'>('all');
 
   // Tournament Edit / Cancel / Delete states
   const [showEditPanel, setShowEditPanel] = useState(false);
@@ -117,8 +129,10 @@ export default function TournamentDetailPage() {
   const loadSeqRef = useRef(0);
   const realtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Seeding, Preliminary Draw & Swap Controls
+  // Seeding, Preliminary Draw, Custom Groups & Swap Controls
   const [seedingMode, setSeedingMode] = useState<SeedingMode>('elo');
+  const [rrDistribution, setRrDistribution] = useState<RoundRobinDistribution>('snake');
+  const [customGroupsDraft, setCustomGroupsDraft] = useState<Record<string, number>>({});
   const [drawPoolOverride, setDrawPoolOverride] = useState<'auto' | 'preliminary' | 'checked_in'>(
     'auto'
   );
@@ -198,6 +212,10 @@ export default function TournamentDetailPage() {
         entry2: m.entry2_id ? entryMap[m.entry2_id] : null,
       }));
       setMatches(enriched);
+      const maxG = enriched.reduce((mx, m) => Math.max(mx, m.group_number || 0), 0);
+      if (maxG > 0) {
+        setGroupCount((prev) => (prev === 2 && maxG !== 2 ? maxG : prev));
+      }
     }
 
     if (pData) setAllPlayers(pData as Player[]);
@@ -301,6 +319,9 @@ export default function TournamentDetailPage() {
 
   const drawEntries = effectiveDrawPool === 'preliminary' ? activeEntries : checkedInEntries;
 
+  const isLeagueMode = isLeagueStage(currentStage);
+  const currentUiFormat = getUiFormat(currentStage);
+
   const entryGroupMap = useMemo(() => {
     const map = new Map<string, number>();
     if (currentStage?.format === 'round_robin') {
@@ -312,6 +333,41 @@ export default function TournamentDetailPage() {
     }
     return map;
   }, [stageMatches, currentStage?.format]);
+
+  const savedCustomGroups = useMemo(
+    () => getStageCustomGroups(currentStage),
+    [currentStage]
+  );
+
+  const syncedStageSplitRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!currentStage || syncedStageSplitRef.current === currentStage.id) return;
+    syncedStageSplitRef.current = currentStage.id;
+    const saved = getStageCustomGroups(currentStage);
+    if (Object.keys(saved).length > 0) {
+      setRrDistribution('custom');
+    } else if (isLeagueStage(currentStage)) {
+      setRrDistribution('sequential');
+    } else {
+      setRrDistribution('snake');
+    }
+  }, [currentStage]);
+
+  const resolvedGroupMap = useMemo(() => {
+    const result: Record<string, number> = { ...savedCustomGroups };
+    entryGroupMap.forEach((g, eid) => {
+      result[eid] = g;
+    });
+    Object.entries(customGroupsDraft).forEach(([eid, g]) => {
+      result[eid] = g;
+    });
+    return result;
+  }, [savedCustomGroups, entryGroupMap, customGroupsDraft]);
+
+  const effectiveGroupCount = useMemo(() => {
+    const maxAssigned = Object.values(resolvedGroupMap).reduce((mx, g) => Math.max(mx, g), 0);
+    return Math.max(groupCount, maxAssigned);
+  }, [groupCount, resolvedGroupMap]);
 
   const csvPreview = useMemo(() => parseCsvParticipantsBatch(csvText), [csvText]);
 
@@ -353,13 +409,13 @@ export default function TournamentDetailPage() {
   }, [stageMatches, entries, isGroupOrSwiss, isSwiss]);
 
   const predictedQualifiers = useMemo(() => {
-    if (!isGroupOrSwiss) return [];
+    if (!isGroupOrSwiss || isLeagueMode) return [];
     if (isSwiss) return liveStandings.slice(0, swissAdvanceCount);
     return liveStandings.filter((row) => {
       const limit = groupAdvanceMap[row.groupNumber] ?? 2;
       return row.rankInGroup <= limit;
     });
-  }, [liveStandings, isGroupOrSwiss, isSwiss, swissAdvanceCount, groupAdvanceMap]);
+  }, [liveStandings, isGroupOrSwiss, isLeagueMode, isSwiss, swissAdvanceCount, groupAdvanceMap]);
 
   const qualifiedIdSet = useMemo(
     () => new Set(predictedQualifiers.map((q) => q.entry.id)),
@@ -457,10 +513,110 @@ export default function TournamentDetailPage() {
     }
   };
 
-  const handleStageFormatChange = async (stageId: string, newFormat: StageFormat) => {
+  const handleStageFormatChange = async (stageId: string, uiFormat: UiStageFormat) => {
     if (isStageStructureLocked) return;
-    await supabase.from('tournament_stages').update({ format: newFormat }).eq('id', stageId);
-    setStages(stages.map((s) => (s.id === stageId ? { ...s, format: newFormat } : s)));
+    const stageObj = stages.find((s) => s.id === stageId);
+    const existingConfig = (stageObj?.config as Record<string, unknown>) || {};
+    const isLeague = uiFormat === 'club_league';
+    const dbFormat: StageFormat = isLeague ? 'round_robin' : uiFormat;
+    const nextConfig: Record<string, unknown> = isLeague
+      ? {
+          ...existingConfig,
+          league_mode: true,
+          group_names:
+            (existingConfig.group_names as Record<string, string>) ||
+            getDefaultLeagueNames(locale),
+        }
+      : { ...existingConfig, league_mode: false };
+
+    await supabase
+      .from('tournament_stages')
+      .update({ format: dbFormat, config: nextConfig })
+      .eq('id', stageId);
+    setStages(
+      stages.map((s) =>
+        s.id === stageId ? { ...s, format: dbFormat, config: nextConfig } : s
+      )
+    );
+    if (isLeague && rrDistribution === 'snake') {
+      setRrDistribution('sequential');
+    } else if (!isLeague && rrDistribution === 'sequential') {
+      setRrDistribution('snake');
+    }
+  };
+
+  const updateStageConfig = async (
+    stageId: string,
+    updater: (prev: Record<string, unknown>) => Record<string, unknown>
+  ) => {
+    const stageObj = stages.find((s) => s.id === stageId);
+    if (!stageObj) return;
+    const nextConfig = updater(((stageObj.config as Record<string, unknown>) || {}));
+    setStages(stages.map((s) => (s.id === stageId ? { ...s, config: nextConfig } : s)));
+    await supabase.from('tournament_stages').update({ config: nextConfig }).eq('id', stageId);
+  };
+
+  const handleRenameGroup = async (groupNum: number, newName: string) => {
+    if (!currentStage) return;
+    await updateStageConfig(currentStage.id, (prev) => ({
+      ...prev,
+      group_names: {
+        ...((prev.group_names as Record<string, string>) || {}),
+        [String(groupNum)]: newName,
+      },
+    }));
+  };
+
+  const handleAssignEntryCustomGroup = async (entryId: string, groupNum: number) => {
+    if (!tournament || !currentStage) return;
+    setEngineMsg(null);
+
+    if (currentStage.format === 'round_robin' && stageMatches.length > 0) {
+      if (actionLockRef.current) return;
+      actionLockRef.current = true;
+      setBusyAction('group_move');
+      try {
+        await moveEntryBetweenRoundRobinGroups(
+          tournament.id,
+          currentStage.id,
+          entryId,
+          groupNum,
+          activeEntries
+        );
+        await updateStageConfig(currentStage.id, (prev) => ({
+          ...prev,
+          custom_groups: {
+            ...resolvedGroupMap,
+            [entryId]: groupNum,
+          },
+        }));
+        setCustomGroupsDraft((prev) => ({ ...prev, [entryId]: groupNum }));
+        setEngineMsg({
+          text:
+            locale === 'ru'
+              ? `✓ Участник перенесён в ${getGroupDisplayName(currentStage, groupNum, locale)}`
+              : `✓ Moved player to ${getGroupDisplayName(currentStage, groupNum, locale)}`,
+        });
+        await loadTournamentData();
+      } catch (err: unknown) {
+        setEngineMsg({
+          text: err instanceof Error ? err.message : 'Error',
+          isError: true,
+        });
+      } finally {
+        actionLockRef.current = false;
+        setBusyAction(null);
+      }
+      return;
+    }
+
+    const nextDraft = { ...resolvedGroupMap, [entryId]: groupNum };
+    setCustomGroupsDraft(nextDraft);
+    setRrDistribution('custom');
+    await updateStageConfig(currentStage.id, (prev) => ({
+      ...prev,
+      custom_groups: nextDraft,
+    }));
   };
 
   const runDrawGeneration = async (skipConfirm = false) => {
@@ -476,15 +632,23 @@ export default function TournamentDetailPage() {
     setEngineMsg(null);
     try {
       const isPreliminary = effectiveDrawPool === 'preliminary';
+      const customGroupsToUse =
+        currentStage.format === 'round_robin' && rrDistribution === 'custom'
+          ? resolvedGroupMap
+          : undefined;
       await generateStageDraw(
         tournament.id,
         currentStage.id,
         currentStage.format,
         drawEntries,
-        groupCount,
+        effectiveGroupCount,
         false,
         seedingMode,
-        { preliminary: isPreliminary }
+        {
+          preliminary: isPreliminary,
+          groupDistribution: currentStage.format === 'round_robin' ? rrDistribution : undefined,
+          customGroups: customGroupsToUse,
+        }
       );
       setEngineMsg({
         text: isPreliminary
@@ -600,11 +764,46 @@ export default function TournamentDetailPage() {
   };
 
   const handleSeedNumberChange = async (entryId: string, newSeed: number) => {
-    await supabase
-      .from('tournament_entries')
-      .update({ seed_number: newSeed })
-      .eq('id', entryId);
-    setEntries(entries.map((e) => (e.id === entryId ? { ...e, seed_number: newSeed } : e)));
+    // Persist displayed fallback seeds for any null entries too so manual seeding order stays consistent
+    const updatedList = entries.map((e, idx) => {
+      if (e.id === entryId) return { ...e, seed_number: newSeed };
+      if (e.seed_number === null) return { ...e, seed_number: idx + 1 };
+      return e;
+    });
+    setEntries(updatedList);
+
+    const updatesToPersist = updatedList.filter((u, idx) => {
+      const orig = entries[idx];
+      return u.id === entryId || orig.seed_number === null;
+    });
+    await Promise.all(
+      updatesToPersist.map((u) =>
+        supabase.from('tournament_entries').update({ seed_number: u.seed_number }).eq('id', u.id)
+      )
+    );
+  };
+
+  const handleNumberAllSeedsInOrder = async () => {
+    if (entries.length === 0) return;
+    const numbered = entries.map((e, idx) => ({ ...e, seed_number: idx + 1 }));
+    setEntries(numbered);
+    setSeedDrafts({});
+    await Promise.all(
+      numbered.map((e) =>
+        supabase.from('tournament_entries').update({ seed_number: e.seed_number }).eq('id', e.id)
+      )
+    );
+    setEngineMsg({
+      text: locale === 'ru' ? '✓ Номера посева (1..N) сохранены' : '✓ Seed numbers (1..N) saved',
+    });
+  };
+
+  const handleSortEntriesBySeed = () => {
+    const sorted = [...entries].sort(
+      (a, b) => (a.seed_number ?? 9999) - (b.seed_number ?? 9999) || b.seed_elo - a.seed_elo
+    );
+    setEntries(sorted);
+    setSeedDrafts({});
   };
 
   const handleAssignTable = async (matchId: string, tableNum: number | null) => {
@@ -652,7 +851,8 @@ export default function TournamentDetailPage() {
         tournament.id,
         stageMatches,
         currentStage.format,
-        entries
+        entries,
+        { leagueMode: isLeagueMode }
       );
       setEngineMsg({ text: '✓ Турнир завершён, медали вручены!' });
       await loadTournamentData();
@@ -670,16 +870,32 @@ export default function TournamentDetailPage() {
   // --- EXPORT TOURNAMENT REPORT TO EXCEL CSV ---
   const handleExportCsv = () => {
     if (!tournament) return;
+    const standingRankByEntry = new Map<string, (typeof liveStandings)[number]>();
+    liveStandings.forEach((row) => standingRankByEntry.set(row.entry.id, row));
+
     const rows: string[][] = [
       ['Tournament', tournament.title],
       ['Date', new Date(tournament.event_date).toLocaleDateString('ru-RU')],
       [],
-      ['Placement', 'Participant', 'University ID', 'Category', 'Seed Elo', 'Attendance'],
+      [
+        'Overall Placement',
+        'League / Group',
+        'Rank in League',
+        'Participant',
+        'University ID',
+        'Category',
+        'Seed Elo',
+        'Attendance',
+      ],
     ];
 
     entries.forEach((e) => {
+      const gNum = entryGroupMap.get(e.id);
+      const st = standingRankByEntry.get(e.id);
       rows.push([
         e.final_placement ? String(e.final_placement) : '',
+        gNum ? getGroupDisplayName(currentStage, gNum, locale) : '',
+        st ? String(st.rankInGroup) : '',
         formatEntryName(e),
         e.player1?.university_id || '',
         e.player1?.category || '',
@@ -689,9 +905,10 @@ export default function TournamentDetailPage() {
     });
 
     rows.push([]);
-    rows.push(['Round', 'Match #', 'Player 1', 'Score 1', 'Score 2', 'Player 2', 'Status']);
+    rows.push(['Group', 'Round', 'Match #', 'Player 1', 'Score 1', 'Score 2', 'Player 2', 'Status']);
     matches.forEach((m) => {
       rows.push([
+        m.group_number ? getGroupDisplayName(currentStage, m.group_number, locale) : '',
         String(m.round_number),
         String(m.match_number),
         formatEntryName(m.entry1),
@@ -917,7 +1134,7 @@ export default function TournamentDetailPage() {
     (num) => !occupiedTables.has(num)
   );
 
-  const readyQueue = stageMatches.filter(
+  const rawReadyQueue = stageMatches.filter(
     (m) =>
       m.status === 'scheduled' &&
       m.entry1_id &&
@@ -925,10 +1142,16 @@ export default function TournamentDetailPage() {
       !busyEntryIds.has(m.entry1_id) &&
       !busyEntryIds.has(m.entry2_id)
   );
+  const readyQueue = sortReadyQueueBalanced(rawReadyQueue, stageMatches);
 
   const distinctGroups = Array.from(
     new Set(stageMatches.map((m) => m.group_number || 1))
   ).sort((a, b) => a - b);
+
+  const filteredReadyQueue =
+    queueGroupFilter === 'all'
+      ? readyQueue
+      : readyQueue.filter((m) => (m.group_number || 1) === queueGroupFilter);
 
   const filteredEntries = entries.filter((entry) => {
     const q = participantSearch.trim().toLowerCase();
@@ -1053,7 +1276,7 @@ export default function TournamentDetailPage() {
                       : 'bg-[#F1EDE4] text-[#53605A] hover:text-[#18211D]'
                   }`}
                 >
-                  {t.TournamentDetail.stageTab} {s.stage_order}: {t.Staff.formats[s.format]}
+                  {t.TournamentDetail.stageTab} {s.stage_order}: {t.Staff.formats[getUiFormat(s)]}
                 </button>
               ))}
             </div>
@@ -1323,9 +1546,9 @@ export default function TournamentDetailPage() {
                   </label>
                   <select
                     disabled={isStageStructureLocked}
-                    value={currentStage.format}
+                    value={currentUiFormat}
                     onChange={(e) =>
-                      handleStageFormatChange(currentStage.id, e.target.value as StageFormat)
+                      handleStageFormatChange(currentStage.id, e.target.value as UiStageFormat)
                     }
                     className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-medium disabled:opacity-50"
                   >
@@ -1336,6 +1559,7 @@ export default function TournamentDetailPage() {
                       {t.Staff.formats.double_elimination}
                     </option>
                     <option value="round_robin">{t.Staff.formats.round_robin}</option>
+                    <option value="club_league">{t.Staff.formats.club_league}</option>
                     <option value="swiss">{t.Staff.formats.swiss}</option>
                   </select>
                 </div>
@@ -1381,21 +1605,54 @@ export default function TournamentDetailPage() {
               </div>
 
               {currentStage?.format === 'round_robin' && (
-                <div>
-                  <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
-                    {t.TournamentDetail.groupsCount}
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={8}
-                    disabled={isStageStructureLocked}
-                    value={groupCount}
-                    onFocus={(e) => e.target.select()}
-                    onChange={(e) => setGroupCount(Math.max(1, Number(e.target.value)))}
-                    className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-num"
-                  />
-                </div>
+                <>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                      {isLeagueMode
+                        ? locale === 'ru'
+                          ? 'Кол-во лиг'
+                          : 'Leagues Count'
+                        : t.TournamentDetail.groupsCount}
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      disabled={isStageStructureLocked}
+                      value={groupCount}
+                      onFocus={(e) => e.target.select()}
+                      onChange={(e) => setGroupCount(Math.max(1, Number(e.target.value)))}
+                      className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-num"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                      {locale === 'ru' ? 'Разбивка групп' : 'Group Split'}
+                    </label>
+                    <select
+                      value={rrDistribution}
+                      onChange={(e) =>
+                        setRrDistribution(e.target.value as RoundRobinDistribution | 'custom')
+                      }
+                      className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-medium"
+                    >
+                      <option value="snake">
+                        {locale === 'ru' ? 'Змейка (равные группы)' : 'Snake (Balanced)'}
+                      </option>
+                      <option value="sequential">
+                        {locale === 'ru'
+                          ? 'По порядку (1-я сильнейшая)'
+                          : 'Sequential (Division order)'}
+                      </option>
+                      <option value="custom">
+                        {locale === 'ru'
+                          ? 'Вручную (колонка Лига/Группа)'
+                          : 'Custom (Manual Group column)'}
+                      </option>
+                    </select>
+                  </div>
+                </>
               )}
 
               <div className="col-span-2 flex flex-wrap gap-2">
@@ -1454,6 +1711,72 @@ export default function TournamentDetailPage() {
                 )}
               </div>
             </div>
+
+            {currentStage?.format === 'round_robin' && drawEntries.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#53605A]">
+                <span className="font-semibold">
+                  {isLeagueMode
+                    ? locale === 'ru'
+                      ? 'Состав лиг:'
+                      : 'Leagues:'
+                    : locale === 'ru'
+                    ? 'Состав групп:'
+                    : 'Groups:'}
+                </span>
+                {rrDistribution === 'custom' ? (
+                  <>
+                    {Array.from(
+                      { length: Math.max(effectiveGroupCount, 1) },
+                      (_, i) => i + 1
+                    ).map((gNum) => {
+                      const count = drawEntries.filter(
+                        (e) => resolvedGroupMap[e.id] === gNum
+                      ).length;
+                      return (
+                        <span
+                          key={gNum}
+                          className="font-num px-1.5 py-0.5 rounded bg-white border border-[#E3DED2] text-[#18211D]"
+                        >
+                          {isLeagueMode ? `L${gNum}` : `G${gNum}`}: {count}
+                        </span>
+                      );
+                    })}
+                    {(() => {
+                      const unassigned = drawEntries.filter(
+                        (e) => !resolvedGroupMap[e.id]
+                      ).length;
+                      if (unassigned === 0) return null;
+                      return (
+                        <span className="font-num px-1.5 py-0.5 rounded bg-[#FEF3C7] border border-[#FDE68A] text-[#92400E]">
+                          {locale === 'ru'
+                            ? `Без группы: ${unassigned}`
+                            : `Unassigned: ${unassigned}`}
+                        </span>
+                      );
+                    })()}
+                  </>
+                ) : (
+                  (() => {
+                    const k = Math.max(1, effectiveGroupCount);
+                    const n = drawEntries.length;
+                    const base = Math.floor(n / k);
+                    const extra = n % k;
+                    return Array.from({ length: k }, (_, i) => {
+                      const gNum = i + 1;
+                      const size = base + (i < extra ? 1 : 0);
+                      return (
+                        <span
+                          key={gNum}
+                          className="font-num px-1.5 py-0.5 rounded bg-white border border-[#E3DED2] text-[#18211D]"
+                        >
+                          {isLeagueMode ? `L${gNum}` : `G${gNum}`}: {size}
+                        </span>
+                      );
+                    });
+                  })()
+                )}
+              </div>
+            )}
 
             {effectiveDrawPool === 'preliminary' && (
               <p className="text-[11px] text-[#53605A]">
@@ -1567,12 +1890,16 @@ export default function TournamentDetailPage() {
           <div className="flex-1 min-w-0 w-full bg-white border border-[#E3DED2] rounded-xl p-5 shadow-[0_1px_2px_rgba(20,30,25,0.04)] space-y-6">
             <div className="flex flex-wrap justify-between items-center gap-2 border-b border-[#EFECE4] pb-3">
               <h2 className="text-base font-bold text-[#18211D]">
-                {t.Staff.formats[currentStage.format]}
+                {t.Staff.formats[getUiFormat(currentStage)]}
               </h2>
               {isJuryMode && (
                 <span className="text-xs text-[#53605A]">
                   {manualSlotEditMode
-                    ? locale === 'ru'
+                    ? currentStage.format === 'round_robin'
+                      ? locale === 'ru'
+                        ? 'Режим слотов: выберите группу/лигу у игрока или перенесите в карточке группы'
+                        : 'Slot edit active: move players directly between groups or leagues'
+                      : locale === 'ru'
                       ? 'Режим слотов активен: выбор игрока меняет его местами с текущим'
                       : 'Slot edit active: picking a placed player swaps them cleanly'
                     : !fastTestMode
@@ -1705,25 +2032,65 @@ export default function TournamentDetailPage() {
               </div>
             )}
 
-            {/* VIEW B: ROUND ROBIN GROUPS */}
+            {/* VIEW B: ROUND ROBIN GROUPS / CLUB LEAGUE DIVISIONS */}
             {currentStage.format === 'round_robin' && (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {distinctGroups.map((gNum) => {
                   const gMatches = stageMatches.filter((m) => (m.group_number || 1) === gNum);
                   const gStandings = liveStandings.filter((r) => r.groupNumber === gNum);
                   const advanceCountForThisGroup = groupAdvanceMap[gNum] ?? 2;
+                  const gName = getGroupDisplayName(currentStage, gNum, locale);
+                  const completedInGroup = gMatches.filter((m) => m.status === 'completed').length;
+                  const groupChoices = Array.from(
+                    { length: Math.max(effectiveGroupCount, ...distinctGroups, 1) },
+                    (_, i) => i + 1
+                  );
+                  const otherGroupEntries = activeEntries.filter(
+                    (ce) => (entryGroupMap.get(ce.id) || 0) !== gNum
+                  );
 
                   return (
                     <div
                       key={gNum}
                       className="border border-[#E3DED2] rounded-xl p-4 bg-[#FAF8F4]/70 space-y-3.5"
                     >
-                      <div className="flex justify-between items-center">
-                        <h3 className="font-bold text-sm text-[#1D4ED8]">
-                          {t.TournamentDetail.group} #{gNum}
-                        </h3>
-                        {isJuryMode && (
-                          <label className="flex items-center gap-1.5 text-xs text-[#53605A]">
+                      <div className="flex justify-between items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isLeagueMode && isJuryMode ? (
+                            <input
+                              key={`${gNum}-${gName}`}
+                              type="text"
+                              defaultValue={gName}
+                              onBlur={(e) => {
+                                const val = e.target.value.trim();
+                                if (val && val !== gName) {
+                                  handleRenameGroup(gNum, val);
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  (e.target as HTMLInputElement).blur();
+                                }
+                              }}
+                              className="font-bold text-sm text-[#1D4ED8] bg-white/80 hover:bg-white border border-transparent hover:border-[#BFDBFE] focus:border-[#1D4ED8] rounded-md px-1.5 py-0.5 w-44 outline-none"
+                              title={
+                                locale === 'ru'
+                                  ? 'Нажмите, чтобы переименовать лигу'
+                                  : 'Click to rename league'
+                              }
+                            />
+                          ) : (
+                            <h3 className="font-bold text-sm text-[#1D4ED8] truncate">
+                              {gName}
+                            </h3>
+                          )}
+                          <span className="font-num text-[11px] font-semibold text-[#53605A] bg-white border border-[#E3DED2] px-1.5 py-0.5 rounded shrink-0">
+                            {gStandings.length}
+                          </span>
+                        </div>
+
+                        {isJuryMode && !isLeagueMode && (
+                          <label className="flex items-center gap-1.5 text-xs text-[#53605A] shrink-0">
                             <span>{t.TournamentDetail.advanceFromGroup}</span>
                             <input
                               type="number"
@@ -1740,6 +2107,12 @@ export default function TournamentDetailPage() {
                               className="w-12 border border-[#E3DED2] bg-white rounded-md px-1.5 py-0.5 text-center font-num font-bold text-[#1D4ED8]"
                             />
                           </label>
+                        )}
+
+                        {isLeagueMode && (
+                          <span className="text-[11px] font-semibold text-[#B45309] shrink-0">
+                            Top-3 🏆
+                          </span>
                         )}
                       </div>
 
@@ -1767,23 +2140,59 @@ export default function TournamentDetailPage() {
                           </thead>
                           <tbody className="divide-y divide-[#EFECE4]">
                             {gStandings.map((row, rIdx) => {
-                              const isQualifying = qualifiedIdSet.has(row.entry.id);
+                              const isQualifying =
+                                !isLeagueMode && qualifiedIdSet.has(row.entry.id);
+                              const isLeaguePodium =
+                                isLeagueMode && row.played > 0 && rIdx < 3;
                               return (
                                 <tr
                                   key={row.entry.id}
-                                  className={isQualifying ? 'bg-[#EFF6FF]/60' : ''}
+                                  className={
+                                    isQualifying || isLeaguePodium ? 'bg-[#EFF6FF]/60' : ''
+                                  }
                                 >
                                   <td
                                     className={`p-2 border-r border-[#EFECE4] font-num font-bold ${
-                                      isQualifying
+                                      isQualifying || isLeaguePodium
                                         ? 'border-l-2 border-l-[#1D4ED8] text-[#1D4ED8]'
                                         : 'text-[#828E88]'
                                     }`}
                                   >
                                     {rIdx + 1}
                                   </td>
-                                  <td className="p-2 border-r border-[#EFECE4] font-medium text-[#18211D] truncate max-w-[135px]">
-                                    {formatEntryName(row.entry)}
+                                  <td className="p-2 border-r border-[#EFECE4] font-medium text-[#18211D] min-w-[140px]">
+                                    <div className="flex items-center justify-between gap-1.5">
+                                      <span className="truncate max-w-[145px]">
+                                        {isLeagueMode && row.played > 0 && rIdx === 0 && '🥇 '}
+                                        {isLeagueMode && row.played > 0 && rIdx === 1 && '🥈 '}
+                                        {isLeagueMode && row.played > 0 && rIdx === 2 && '🥉 '}
+                                        {formatEntryName(row.entry)}
+                                      </span>
+                                      {isJuryMode && manualSlotEditMode && (
+                                        <select
+                                          disabled={busyAction !== null}
+                                          value={gNum}
+                                          onChange={(e) => {
+                                            const targetG = Number(e.target.value);
+                                            if (targetG !== gNum) {
+                                              handleAssignEntryCustomGroup(row.entry.id, targetG);
+                                            }
+                                          }}
+                                          title={
+                                            locale === 'ru'
+                                              ? 'Перенести участника в другую группу / лигу'
+                                              : 'Move player to another group / league'
+                                          }
+                                          className="border border-[#BFDBFE] bg-[#EFF6FF] text-[#1D4ED8] rounded px-1 py-0.5 text-[10px] font-bold shrink-0"
+                                        >
+                                          {groupChoices.map((optG) => (
+                                            <option key={optG} value={optG}>
+                                              {isLeagueMode ? `L${optG}` : `G${optG}`}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      )}
+                                    </div>
                                   </td>
                                   {gStandings.map((col, cIdx) => {
                                     if (rIdx === cIdx) {
@@ -1838,87 +2247,134 @@ export default function TournamentDetailPage() {
                         </table>
                       </div>
 
-                      <div className="space-y-1.5">
-                        {gMatches.map((m) => {
-                          const canScore =
-                            isJuryMode &&
-                            busyMatchId !== m.id &&
-                            (fastTestMode ||
-                              m.status === 'in_progress' ||
-                              m.status === 'completed');
-                          return (
-                            <div
-                              key={m.id}
-                              className={`border rounded-lg px-3 py-2 bg-white flex flex-wrap justify-between items-center gap-2 text-xs ${
-                                m.status === 'in_progress'
-                                  ? 'border-[#1D4ED8] ring-1 ring-[#1D4ED8]/15'
-                                  : m.status === 'completed'
-                                  ? 'border-[#BFDBFE]'
-                                  : 'border-[#E3DED2]'
-                              }`}
-                            >
-                              <div className="truncate max-w-[210px]">
-                                <span
-                                  className={
-                                    m.winner_entry_id === m.entry1_id
-                                      ? 'font-bold text-[#1D4ED8]'
-                                      : 'text-[#18211D]'
-                                  }
-                                >
-                                  {formatEntryName(m.entry1)}
-                                </span>{' '}
-                                <span className="text-[#828E88]">vs</span>{' '}
-                                <span
-                                  className={
-                                    m.winner_entry_id === m.entry2_id
-                                      ? 'font-bold text-[#1D4ED8]'
-                                      : 'text-[#18211D]'
-                                  }
-                                >
-                                  {formatEntryName(m.entry2)}
-                                </span>
-                              </div>
+                      {isJuryMode && manualSlotEditMode && otherGroupEntries.length > 0 && (
+                        <div className="flex items-center gap-2">
+                          <select
+                            disabled={busyAction !== null}
+                            value=""
+                            onChange={(e) => {
+                              if (e.target.value) {
+                                handleAssignEntryCustomGroup(e.target.value, gNum);
+                              }
+                            }}
+                            className="w-full border border-dashed border-[#BFDBFE] bg-white rounded-lg px-2.5 py-1 text-xs font-medium text-[#1D4ED8]"
+                          >
+                            <option value="">
+                              {locale === 'ru'
+                                ? `+ Перенести игрока в «${gName}»...`
+                                : `+ Move player into ${gName}...`}
+                            </option>
+                            {otherGroupEntries.map((ce) => {
+                              const currG = entryGroupMap.get(ce.id);
+                              return (
+                                <option key={ce.id} value={ce.id}>
+                                  {currG ? `[${isLeagueMode ? 'L' : 'G'}${currG}] ` : ''}
+                                  {formatEntryName(ce)} ({ce.seed_elo})
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+                      )}
 
-                              <div className="flex items-center gap-1">
-                                {validScorePairs.map(([s1, s2]) => {
-                                  const isSelected =
-                                    m.status === 'completed' &&
-                                    m.entry1_score === s1 &&
-                                    m.entry2_score === s2;
-                                  return (
-                                    <button
-                                      key={`${s1}-${s2}`}
-                                      type="button"
-                                      disabled={!canScore}
-                                      onClick={() => handleQuickResult(m, s1, s2)}
-                                      className={`px-2 py-0.5 rounded-md font-num text-[11px] font-semibold transition-colors ${
-                                        isSelected
-                                          ? 'bg-[#1D4ED8] text-white'
-                                          : canScore
-                                          ? 'bg-[#F1EDE4] hover:bg-[#1D4ED8] hover:text-white text-[#53605A]'
-                                          : 'bg-[#FAF8F4] text-[#CCC5B6] cursor-default'
-                                      }`}
-                                    >
-                                      {s1}:{s2}
-                                    </button>
-                                  );
-                                })}
-                                {isJuryMode && m.status === 'completed' && (
-                                  <button
-                                    type="button"
-                                    disabled={busyMatchId === m.id}
-                                    onClick={() => handleUndoMatch(m)}
-                                    title="Undo"
-                                    className="ml-1 text-[#C2412D] hover:opacity-75 p-0.5"
+                      {fastTestMode ? (
+                        <div className="space-y-1.5">
+                          {gMatches.map((m) => {
+                            const canScore =
+                              isJuryMode &&
+                              busyMatchId !== m.id &&
+                              (fastTestMode ||
+                                m.status === 'in_progress' ||
+                                m.status === 'completed');
+                            return (
+                              <div
+                                key={m.id}
+                                className={`border rounded-lg px-3 py-2 bg-white flex flex-wrap justify-between items-center gap-2 text-xs ${
+                                  m.status === 'in_progress'
+                                    ? 'border-[#1D4ED8] ring-1 ring-[#1D4ED8]/15'
+                                    : m.status === 'completed'
+                                    ? 'border-[#BFDBFE]'
+                                    : 'border-[#E3DED2]'
+                                }`}
+                              >
+                                <div className="truncate max-w-[210px]">
+                                  <span
+                                    className={
+                                      m.winner_entry_id === m.entry1_id
+                                        ? 'font-bold text-[#1D4ED8]'
+                                        : 'text-[#18211D]'
+                                    }
                                   >
-                                    <RotateCcw className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
+                                    {formatEntryName(m.entry1)}
+                                  </span>{' '}
+                                  <span className="text-[#828E88]">vs</span>{' '}
+                                  <span
+                                    className={
+                                      m.winner_entry_id === m.entry2_id
+                                        ? 'font-bold text-[#1D4ED8]'
+                                        : 'text-[#18211D]'
+                                    }
+                                  >
+                                    {formatEntryName(m.entry2)}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-1">
+                                  {validScorePairs.map(([s1, s2]) => {
+                                    const isSelected =
+                                      m.status === 'completed' &&
+                                      m.entry1_score === s1 &&
+                                      m.entry2_score === s2;
+                                    return (
+                                      <button
+                                        key={`${s1}-${s2}`}
+                                        type="button"
+                                        disabled={!canScore}
+                                        onClick={() => handleQuickResult(m, s1, s2)}
+                                        className={`px-2 py-0.5 rounded-md font-num text-[11px] font-semibold transition-colors ${
+                                          isSelected
+                                            ? 'bg-[#1D4ED8] text-white'
+                                            : canScore
+                                            ? 'bg-[#F1EDE4] hover:bg-[#1D4ED8] hover:text-white text-[#53605A]'
+                                            : 'bg-[#FAF8F4] text-[#CCC5B6] cursor-default'
+                                        }`}
+                                      >
+                                        {s1}:{s2}
+                                      </button>
+                                    );
+                                  })}
+                                  {isJuryMode && m.status === 'completed' && (
+                                    <button
+                                      type="button"
+                                      disabled={busyMatchId === m.id}
+                                      onClick={() => handleUndoMatch(m)}
+                                      title="Undo"
+                                      className="ml-1 text-[#C2412D] hover:opacity-75 p-0.5"
+                                    >
+                                      <RotateCcw className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between text-[11px] text-[#828E88] pt-0.5">
+                          <span className="font-num">
+                            {locale === 'ru'
+                              ? `Сыграно: ${completedInGroup} / ${gMatches.length}`
+                              : `Played: ${completedInGroup} / ${gMatches.length}`}
+                          </span>
+                          {isJuryMode && (
+                            <span>
+                              {locale === 'ru'
+                                ? 'Счёт — на панели столов справа'
+                                : 'Score active matches in Tables sidebar'}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1948,6 +2404,8 @@ export default function TournamentDetailPage() {
                               (fastTestMode ||
                                 m.status === 'in_progress' ||
                                 m.status === 'completed');
+                            const canEditSlots =
+                              isJuryMode && manualSlotEditMode && m.status !== 'completed';
                             return (
                               <div
                                 key={m.id}
@@ -1959,27 +2417,63 @@ export default function TournamentDetailPage() {
                                     : 'border-[#E3DED2]'
                                 }`}
                               >
-                                <div className="truncate">
-                                  <span
-                                    className={
-                                      m.winner_entry_id === m.entry1_id
-                                        ? 'font-bold text-[#1D4ED8]'
-                                        : 'text-[#18211D]'
-                                    }
-                                  >
-                                    {formatEntryName(m.entry1)}
-                                  </span>{' '}
-                                  <span className="text-[#828E88]">vs</span>{' '}
-                                  <span
-                                    className={
-                                      m.winner_entry_id === m.entry2_id
-                                        ? 'font-bold text-[#1D4ED8]'
-                                        : 'text-[#18211D]'
-                                    }
-                                  >
-                                    {formatEntryName(m.entry2)}
-                                  </span>
-                                </div>
+                                {canEditSlots ? (
+                                  <div className="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
+                                    <select
+                                      value={m.entry1_id || ''}
+                                      onChange={(e) =>
+                                        handleDirectSlotAssign(m, 1, e.target.value)
+                                      }
+                                      className="flex-1 min-w-[110px] border border-[#BFDBFE] bg-[#EFF6FF]/60 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#18211D]"
+                                    >
+                                      <option value="">TBD</option>
+                                      {activeEntries.map((ce) => (
+                                        <option key={ce.id} value={ce.id}>
+                                          {formatEntryName(ce)} ({ce.seed_elo})
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <span className="text-[#828E88] text-[10px]">vs</span>
+                                    {m.status !== 'walkover' && (
+                                      <select
+                                        value={m.entry2_id || ''}
+                                        onChange={(e) =>
+                                          handleDirectSlotAssign(m, 2, e.target.value)
+                                        }
+                                        className="flex-1 min-w-[110px] border border-[#BFDBFE] bg-[#EFF6FF]/60 rounded px-1.5 py-0.5 text-[11px] font-medium text-[#18211D]"
+                                      >
+                                        <option value="">TBD</option>
+                                        {activeEntries.map((ce) => (
+                                          <option key={ce.id} value={ce.id}>
+                                            {formatEntryName(ce)} ({ce.seed_elo})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="truncate">
+                                    <span
+                                      className={
+                                        m.winner_entry_id === m.entry1_id
+                                          ? 'font-bold text-[#1D4ED8]'
+                                          : 'text-[#18211D]'
+                                      }
+                                    >
+                                      {formatEntryName(m.entry1)}
+                                    </span>{' '}
+                                    <span className="text-[#828E88]">vs</span>{' '}
+                                    <span
+                                      className={
+                                        m.winner_entry_id === m.entry2_id
+                                          ? 'font-bold text-[#1D4ED8]'
+                                          : 'text-[#18211D]'
+                                      }
+                                    >
+                                      {formatEntryName(m.entry2)}
+                                    </span>
+                                  </div>
+                                )}
 
                                 {m.status === 'walkover' ? (
                                   <span className="font-num text-[#1D4ED8] bg-[#EFF6FF] px-2 py-0.5 rounded font-bold shrink-0">
@@ -2034,18 +2528,24 @@ export default function TournamentDetailPage() {
             )}
           </div>
 
-          {/* RIGHT SIDEBAR: LIVE STANDINGS + 8 TABLES */}
+          {/* RIGHT SIDEBAR: LIVE STANDINGS + 8 TABLES + CALL QUEUE */}
           {showSidebar && (
-            <aside className="w-full xl:w-[340px] shrink-0 space-y-4">
+            <aside className="w-full xl:w-[375px] shrink-0 space-y-4">
               {isGroupOrSwiss && (
                 <div className="bg-white border border-[#E3DED2] rounded-xl p-4 shadow-[0_1px_2px_rgba(20,30,25,0.04)] space-y-3">
                   <div className="flex justify-between items-center">
                     <h3 className="text-xs font-bold uppercase tracking-wider text-[#53605A]">
                       {t.TournamentDetail.standingsTitle.replace(/^[^\wА-Яа-яЁё]+\s*/, '')}
                     </h3>
-                    <span className="font-num text-[11px] font-semibold text-[#1D4ED8] bg-[#EFF6FF] border border-[#BFDBFE] px-2 py-0.5 rounded-md">
-                      {t.TournamentDetail.qualifyingCount}: {predictedQualifiers.length}
-                    </span>
+                    {isLeagueMode ? (
+                      <span className="font-num text-[11px] font-semibold text-[#B45309] bg-[#FEF3C7] border border-[#FDE68A] px-2 py-0.5 rounded-md">
+                        Top-3 🏆
+                      </span>
+                    ) : (
+                      <span className="font-num text-[11px] font-semibold text-[#1D4ED8] bg-[#EFF6FF] border border-[#BFDBFE] px-2 py-0.5 rounded-md">
+                        {t.TournamentDetail.qualifyingCount}: {predictedQualifiers.length}
+                      </span>
+                    )}
                   </div>
 
                   {isSwiss && isJuryMode && (
@@ -2085,21 +2585,34 @@ export default function TournamentDetailPage() {
                       <tbody className="divide-y divide-[#EFECE4]">
                         {liveStandings.map((row, idx) => {
                           const qualifies = qualifiedIdSet.has(row.entry.id);
+                          const isLeaguePodium =
+                            isLeagueMode && row.rankInGroup <= 3 && row.played > 0;
                           return (
                             <tr
                               key={row.entry.id}
-                              className={qualifies ? 'bg-[#EFF6FF]/70 font-medium' : ''}
+                              className={
+                                qualifies || isLeaguePodium
+                                  ? 'bg-[#EFF6FF]/70 font-medium'
+                                  : ''
+                              }
                             >
                               <td
                                 className={`p-2 font-num font-bold ${
-                                  qualifies
+                                  qualifies || isLeaguePodium
                                     ? 'border-l-2 border-l-[#1D4ED8] text-[#1D4ED8]'
                                     : 'text-[#828E88]'
                                 }`}
                               >
-                                {isSwiss ? idx + 1 : `G${row.groupNumber}-${row.rankInGroup}`}
+                                {isSwiss
+                                  ? idx + 1
+                                  : `${isLeagueMode ? 'L' : 'G'}${row.groupNumber}-${
+                                      row.rankInGroup
+                                    }`}
                               </td>
                               <td className="p-2 truncate max-w-[140px] text-[#18211D]">
+                                {isLeagueMode && row.played > 0 && row.rankInGroup === 1 && '🥇 '}
+                                {isLeagueMode && row.played > 0 && row.rankInGroup === 2 && '🥈 '}
+                                {isLeagueMode && row.played > 0 && row.rankInGroup === 3 && '🥉 '}
                                 {formatEntryName(row.entry)}
                               </td>
                               <td className="p-2 text-center font-num font-bold">
@@ -2115,7 +2628,7 @@ export default function TournamentDetailPage() {
                     </table>
                   </div>
 
-                  {isJuryMode && (
+                  {isJuryMode && !isLeagueMode && (
                     <div className="pt-2 border-t border-[#EFECE4] space-y-2">
                       <div className="flex justify-between items-center text-xs">
                         <span className="text-[#53605A]">
@@ -2141,10 +2654,18 @@ export default function TournamentDetailPage() {
                       </button>
                     </div>
                   )}
+
+                  {isJuryMode && isLeagueMode && (
+                    <p className="pt-2 border-t border-[#EFECE4] text-[11px] text-[#53605A]">
+                      {locale === 'ru'
+                        ? 'Клубная лига: без этапа плей-офф. Призёры определяются в каждом дивизионе, а медали турнира — по топ-3 Суперлиги.'
+                        : 'Club League: no playoff stage. Podium places are determined within each division, and tournament medals go to Top-3 of Group #1.'}
+                    </p>
+                  )}
                 </div>
               )}
 
-              {/* COMPACT 8-TABLE COURT DISPATCHER */}
+              {/* COMPACT 8-TABLE COURT DISPATCHER + LIVE MATCH SCORING */}
               <div className="bg-white border border-[#E3DED2] rounded-xl p-4 shadow-[0_1px_2px_rgba(20,30,25,0.04)] space-y-3.5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-[#53605A]">
@@ -2163,22 +2684,36 @@ export default function TournamentDetailPage() {
                         key={tNum}
                         className={`border rounded-lg p-2.5 text-[11px] transition-colors ${
                           active
-                            ? 'bg-[#EFF6FF]/80 border-[#1D4ED8]/45 border-t-2 border-t-[#1D4ED8]'
+                            ? 'col-span-2 bg-[#EFF6FF]/80 border-[#1D4ED8]/45 border-t-2 border-t-[#1D4ED8] space-y-2'
                             : 'bg-[#FAF8F4] border-[#E3DED2]'
                         }`}
                       >
-                        <div className="flex justify-between items-center font-bold mb-1">
-                          <span className="inline-flex items-center gap-1 font-num text-[#18211D]">
+                        <div className="flex justify-between items-center font-bold gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="inline-flex items-center gap-1 font-num text-[#18211D] shrink-0">
+                              {active && (
+                                <CircleDot className="w-2.5 h-2.5 text-[#1D4ED8] animate-pulse" />
+                              )}
+                              #{tNum}
+                            </span>
                             {active && (
-                              <CircleDot className="w-2.5 h-2.5 text-[#1D4ED8] animate-pulse" />
+                              <span className="truncate font-medium text-[10px] px-1.5 py-0.5 rounded bg-white/90 border border-[#BFDBFE] text-[#1D4ED8]">
+                                {currentStage.format === 'round_robin'
+                                  ? `${getGroupDisplayName(
+                                      currentStage,
+                                      active.group_number || 1,
+                                      locale
+                                    )} · `
+                                  : ''}
+                                R{active.round_number}
+                              </span>
                             )}
-                            #{tNum}
-                          </span>
+                          </div>
                           {active && isJuryMode ? (
                             <button
                               type="button"
                               onClick={() => handleAssignTable(active.id, null)}
-                              className="text-[10px] font-semibold text-[#C2412D] hover:underline"
+                              className="text-[10px] font-semibold text-[#C2412D] hover:underline shrink-0"
                             >
                               {t.TournamentDetail.releaseTable}
                             </button>
@@ -2189,14 +2724,32 @@ export default function TournamentDetailPage() {
                           ) : null}
                         </div>
                         {active ? (
-                          <div className="truncate text-[#18211D] leading-snug">
-                            <div className="truncate font-medium">
-                              {formatEntryName(active.entry1)}
+                          <>
+                            <div className="text-[#18211D] leading-snug text-xs">
+                              <span className="font-semibold">
+                                {formatEntryName(active.entry1)}
+                              </span>{' '}
+                              <span className="text-[#828E88]">vs</span>{' '}
+                              <span className="font-semibold">
+                                {formatEntryName(active.entry2)}
+                              </span>
                             </div>
-                            <div className="truncate text-[#53605A]">
-                              vs {formatEntryName(active.entry2)}
-                            </div>
-                          </div>
+                            {isJuryMode && (
+                              <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                                {validScorePairs.map(([s1, s2]) => (
+                                  <button
+                                    key={`${s1}-${s2}`}
+                                    type="button"
+                                    disabled={busyMatchId === active.id}
+                                    onClick={() => handleQuickResult(active, s1, s2)}
+                                    className="px-2 py-0.5 rounded-md font-num text-[11px] font-semibold bg-white border border-[#BFDBFE] text-[#1D4ED8] hover:bg-[#1D4ED8] hover:text-white transition-colors disabled:opacity-50"
+                                  >
+                                    {s1}:{s2}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </>
                         ) : (
                           <div className="text-[#828E88] text-[10px]">
                             {t.TournamentDetail.waitingPair}
@@ -2209,16 +2762,60 @@ export default function TournamentDetailPage() {
 
                 {isJuryMode && (
                   <div className="border-t border-[#EFECE4] pt-3 space-y-2">
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-[#53605A]">
-                      {t.TournamentDetail.callQueue.replace(/^[^\wА-Яа-яЁё]+\s*/, '')} (
-                      {readyQueue.length})
-                    </p>
-                    <div className="max-h-56 overflow-y-auto thin-scroll space-y-1.5 pr-1">
-                      {readyQueue.slice(0, 8).map((m) => (
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-[#53605A]">
+                        {t.TournamentDetail.callQueue.replace(/^[^\wА-Яа-яЁё]+\s*/, '')} (
+                        {filteredReadyQueue.length})
+                      </p>
+                    </div>
+                    {currentStage.format === 'round_robin' && distinctGroups.length > 1 && (
+                      <div className="flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setQueueGroupFilter('all')}
+                          className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                            queueGroupFilter === 'all'
+                              ? 'bg-[#1D4ED8] text-white'
+                              : 'bg-[#F1EDE4] text-[#53605A] hover:text-[#18211D]'
+                          }`}
+                        >
+                          {locale === 'ru' ? 'Все' : 'All'}
+                        </button>
+                        {distinctGroups.map((gNum) => (
+                          <button
+                            key={gNum}
+                            type="button"
+                            title={getGroupDisplayName(currentStage, gNum, locale)}
+                            onClick={() => setQueueGroupFilter(gNum)}
+                            className={`px-2 py-0.5 rounded font-num text-[10px] font-semibold transition-colors ${
+                              queueGroupFilter === gNum
+                                ? 'bg-[#1D4ED8] text-white'
+                                : 'bg-[#F1EDE4] text-[#53605A] hover:text-[#18211D]'
+                            }`}
+                          >
+                            {isLeagueMode ? `L${gNum}` : `G${gNum}`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="max-h-72 overflow-y-auto thin-scroll space-y-1.5 pr-1">
+                      {filteredReadyQueue.slice(0, 16).map((m) => (
                         <div
                           key={m.id}
                           className="border border-[#E3DED2] rounded-lg p-2.5 bg-[#FAF8F4] text-[11px] space-y-1.5"
                         >
+                          <div className="flex items-center justify-between gap-2 text-[10px] text-[#53605A]">
+                            <span className="font-semibold text-[#1D4ED8] truncate">
+                              {currentStage.format === 'round_robin'
+                                ? `${getGroupDisplayName(
+                                    currentStage,
+                                    m.group_number || 1,
+                                    locale
+                                  )} · `
+                                : ''}
+                              R{m.round_number}
+                            </span>
+                          </div>
                           <div className="font-semibold text-[#18211D] truncate">
                             {formatEntryName(m.entry1)}{' '}
                             <span className="text-[#828E88] font-normal">vs</span>{' '}
@@ -2244,7 +2841,7 @@ export default function TournamentDetailPage() {
                           </div>
                         </div>
                       ))}
-                      {readyQueue.length === 0 && (
+                      {filteredReadyQueue.length === 0 && (
                         <p className="text-[11px] text-[#828E88]">
                           {t.TournamentDetail.noReadyMatches}
                         </p>
@@ -2413,6 +3010,34 @@ export default function TournamentDetailPage() {
             {t.TournamentDetail.participantsTitle}
           </h2>
           <div className="flex flex-wrap items-center gap-2.5 text-xs">
+            {isJuryMode && entries.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleNumberAllSeedsInOrder}
+                  className="px-2.5 py-1 rounded-lg border border-[#E3DED2] bg-[#FAF8F4] hover:bg-[#F1EDE4] text-[#53605A] font-semibold transition-colors"
+                  title={
+                    locale === 'ru'
+                      ? 'Присвоить номера посева 1..N по текущему списку'
+                      : 'Assign sequential seeds 1..N in current order'
+                  }
+                >
+                  Seed 1..N
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSortEntriesBySeed}
+                  className="px-2.5 py-1 rounded-lg border border-[#E3DED2] bg-[#FAF8F4] hover:bg-[#F1EDE4] text-[#53605A] font-semibold transition-colors"
+                  title={
+                    locale === 'ru'
+                      ? 'Отсортировать таблицу по Seed #'
+                      : 'Sort participants by Seed #'
+                  }
+                >
+                  {locale === 'ru' ? 'Сорт. по Seed #' : 'Sort by Seed #'}
+                </button>
+              </>
+            )}
             {entries.length > 6 && (
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-[#828E88] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -2443,6 +3068,17 @@ export default function TournamentDetailPage() {
                 <th className="p-3 font-semibold">Seed #</th>
                 <th className="p-3 font-semibold">{t.Staff.fullName}</th>
                 <th className="p-3 font-semibold">Seed Elo</th>
+                {isJuryMode && currentStage?.format === 'round_robin' && (
+                  <th className="p-3 font-semibold">
+                    {isLeagueMode
+                      ? locale === 'ru'
+                        ? 'Лига'
+                        : 'League'
+                      : locale === 'ru'
+                      ? 'Группа'
+                      : 'Group'}
+                  </th>
+                )}
                 <th className="p-3 font-semibold">{t.TournamentDetail.changeStatus}</th>
                 {isJuryMode && <th className="p-3 text-right font-semibold">Check-In</th>}
               </tr>
@@ -2450,7 +3086,7 @@ export default function TournamentDetailPage() {
             <tbody className="divide-y divide-[#EFECE4]">
               {filteredEntries.map((entry, idx) => {
                 const draftSeed = seedDrafts[entry.id];
-                const gNum = entryGroupMap.get(entry.id);
+                const gNum = resolvedGroupMap[entry.id] ?? entryGroupMap.get(entry.id);
                 return (
                   <tr key={entry.id} className="hover:bg-[#FAF8F4]">
                     <td className="p-3 text-[#828E88] w-24 font-num">
@@ -2492,63 +3128,89 @@ export default function TournamentDetailPage() {
                       {formatEntryName(entry)}
                       {gNum && (
                         <span className="ml-2 font-num text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]">
-                          G{gNum}
+                          {isLeagueMode ? `L${gNum}` : `G${gNum}`}
                         </span>
                       )}
                     </td>
                     <td className="p-3 font-num font-semibold text-[#1D4ED8]">
                       {entry.seed_elo}
                     </td>
-                  <td className="p-3">
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
-                        entry.attendance === 'checked_in'
-                          ? 'bg-[#EFF6FF] text-[#1D4ED8] border-[#BFDBFE]'
-                          : entry.attendance === 'no_show'
-                          ? 'bg-[#FBECE9] text-[#C2412D] border-[#F0C9C2]'
-                          : 'bg-[#F1EDE4] text-[#53605A] border-[#E3DED2]'
-                      }`}
-                    >
-                      {t.TournamentDetail.attendance[entry.attendance]}
-                    </span>
-                  </td>
-                  {isJuryMode && (
-                    <td className="p-3 text-right whitespace-nowrap space-x-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleAttendanceChange(entry.id, 'checked_in')}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    {isJuryMode && currentStage?.format === 'round_robin' && (
+                      <td className="p-3">
+                        <select
+                          disabled={busyAction !== null || entry.attendance === 'no_show'}
+                          value={gNum ?? ''}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            if (val >= 1) {
+                              handleAssignEntryCustomGroup(entry.id, val);
+                            }
+                          }}
+                          className="border border-[#E3DED2] bg-white rounded-lg px-2 py-1 text-xs font-medium disabled:opacity-40"
+                        >
+                          <option value="">
+                            {locale === 'ru' ? '— Авто' : '— Auto'}
+                          </option>
+                          {Array.from({ length: Math.max(effectiveGroupCount, 1) }, (_, i) => i + 1).map(
+                            (num) => (
+                              <option key={num} value={num}>
+                                {getGroupDisplayName(currentStage, num, locale)}
+                              </option>
+                            )
+                          )}
+                        </select>
+                      </td>
+                    )}
+                    <td className="p-3">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
                           entry.attendance === 'checked_in'
-                            ? 'bg-[#1D4ED8] text-white'
-                            : 'bg-[#F1EDE4] hover:bg-[#EFF6FF] text-[#53605A]'
+                            ? 'bg-[#EFF6FF] text-[#1D4ED8] border-[#BFDBFE]'
+                            : entry.attendance === 'no_show'
+                            ? 'bg-[#FBECE9] text-[#C2412D] border-[#F0C9C2]'
+                            : 'bg-[#F1EDE4] text-[#53605A] border-[#E3DED2]'
                         }`}
                       >
-                        <Check className="w-3 h-3" />
-                        <span>{t.TournamentDetail.markCheckedIn}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleAttendanceChange(entry.id, 'no_show')}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
-                          entry.attendance === 'no_show'
-                            ? 'bg-[#C2412D] text-white'
-                            : 'bg-[#F1EDE4] hover:bg-[#FBECE9] text-[#53605A]'
-                        }`}
-                      >
-                        <X className="w-3 h-3" />
-                        <span>{t.TournamentDetail.markNoShow}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteEntry(entry.id)}
-                        title={t.TournamentDetail.remove}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-[#828E88] hover:text-[#C2412D]"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                        {t.TournamentDetail.attendance[entry.attendance]}
+                      </span>
                     </td>
-                  )}
-                </tr>
+                    {isJuryMode && (
+                      <td className="p-3 text-right whitespace-nowrap space-x-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleAttendanceChange(entry.id, 'checked_in')}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                            entry.attendance === 'checked_in'
+                              ? 'bg-[#1D4ED8] text-white'
+                              : 'bg-[#F1EDE4] hover:bg-[#EFF6FF] text-[#53605A]'
+                          }`}
+                        >
+                          <Check className="w-3 h-3" />
+                          <span>{t.TournamentDetail.markCheckedIn}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAttendanceChange(entry.id, 'no_show')}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                            entry.attendance === 'no_show'
+                              ? 'bg-[#C2412D] text-white'
+                              : 'bg-[#F1EDE4] hover:bg-[#FBECE9] text-[#53605A]'
+                          }`}
+                        >
+                          <X className="w-3 h-3" />
+                          <span>{t.TournamentDetail.markNoShow}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteEntry(entry.id)}
+                          title={t.TournamentDetail.remove}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-xs text-[#828E88] hover:text-[#C2412D]"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    )}
+                  </tr>
                 );
               })}
             </tbody>

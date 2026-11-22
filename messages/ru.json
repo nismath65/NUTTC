@@ -37,6 +37,7 @@
       "single_elimination": "Олимпийская система (Single Elimination)",
       "double_elimination": "До двух поражений (Double Elimination)",
       "round_robin": "Круговая / Группы (Round Robin)",
+      "club_league": "Клубная лига (дивизионы)",
       "swiss": "Швейцарская система (Swiss)"
     },
     "createBtn": "Создать турнир",

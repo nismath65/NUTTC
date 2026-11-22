@@ -37,6 +37,7 @@
       "single_elimination": "Single Elimination",
       "double_elimination": "Double Elimination",
       "round_robin": "Round Robin / Groups",
+      "club_league": "Club League (Divisions)",
       "swiss": "Swiss System"
     },
     "createBtn": "Create Tournament",

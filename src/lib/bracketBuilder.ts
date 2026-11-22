@@ -263,47 +263,122 @@ export function buildDoubleElimination(
   return all;
 }
 
+/**
+ * Generates circle-method (Berger) Round Robin pairings for a single group so each
+ * participant plays at most one match per round_number.
+ */
+export function buildGroupRoundRobinMatches(
+  tournamentId: string,
+  stageId: string,
+  groupNumber: number,
+  groupPlayers: TournamentEntry[],
+  idGen: IdGen = defaultIdGen,
+  startMatchNumber: number = 1
+): MatchRow[] {
+  if (groupPlayers.length < 2) return [];
+
+  const list: Array<TournamentEntry | null> = [...groupPlayers];
+  if (list.length % 2 === 1) list.push(null);
+
+  const n = list.length;
+  const totalRounds = n - 1;
+  const half = n / 2;
+  const rows: MatchRow[] = [];
+  let matchCounter = startMatchNumber;
+
+  for (let r = 0; r < totalRounds; r++) {
+    for (let i = 0; i < half; i++) {
+      const a = list[i];
+      const b = list[n - 1 - i];
+      if (a && b) {
+        // Alternate first/second slot cleanly across rounds
+        const first = r % 2 === 1 && i === 0 ? b : a;
+        const second = r % 2 === 1 && i === 0 ? a : b;
+        rows.push(
+          blankRow(idGen, tournamentId, stageId, {
+            round_number: r + 1,
+            match_number: matchCounter++,
+            group_number: groupNumber,
+            bracket_type: 'main',
+            entry1_id: first.id,
+            entry2_id: second.id,
+          })
+        );
+      }
+    }
+
+    // Rotate indices 1..n-1 clockwise
+    const last = list.pop()!;
+    list.splice(1, 0, last);
+  }
+
+  return rows;
+}
+
+export function buildRoundRobinFromGroups(
+  tournamentId: string,
+  stageId: string,
+  groupsMap: Array<{ groupNumber: number; entries: TournamentEntry[] }>,
+  idGen: IdGen = defaultIdGen
+): MatchRow[] {
+  const rows: MatchRow[] = [];
+  const sortedGroups = [...groupsMap].sort((a, b) => a.groupNumber - b.groupNumber);
+  sortedGroups.forEach(({ groupNumber, entries }) => {
+    const groupRows = buildGroupRoundRobinMatches(
+      tournamentId,
+      stageId,
+      groupNumber,
+      entries,
+      idGen,
+      1
+    );
+    rows.push(...groupRows);
+  });
+  return rows;
+}
+
 export function buildRoundRobin(
   tournamentId: string,
   stageId: string,
   seededEntries: TournamentEntry[],
   groupCount: number = 2,
-  idGen: IdGen = defaultIdGen
+  idGen: IdGen = defaultIdGen,
+  distribution: 'snake' | 'sequential' = 'snake'
 ): MatchRow[] {
   const safeGroups = Math.max(1, Math.min(groupCount, Math.floor(seededEntries.length / 2)));
   const groups: TournamentEntry[][] = Array.from({ length: safeGroups }, () => []);
 
-  // Snake seeding
-  seededEntries.forEach((entry, index) => {
-    const row = Math.floor(index / safeGroups);
-    const posInRow = index % safeGroups;
-    const targetGroup = row % 2 === 0 ? posInRow : safeGroups - 1 - posInRow;
-    groups[targetGroup].push(entry);
-  });
-
-  const rows: MatchRow[] = [];
-  groups.forEach((groupPlayers, g) => {
-    let matchCounter = 1;
-    for (let i = 0; i < groupPlayers.length; i++) {
-      for (let j = i + 1; j < groupPlayers.length; j++) {
-        rows.push(
-          blankRow(idGen, tournamentId, stageId, {
-            round_number: 1,
-            match_number: matchCounter++,
-            group_number: g + 1,
-            bracket_type: 'main',
-            entry1_id: groupPlayers[i].id,
-            entry2_id: groupPlayers[j].id,
-          })
-        );
-      }
+  if (distribution === 'sequential') {
+    const baseSize = Math.floor(seededEntries.length / safeGroups);
+    const remainder = seededEntries.length % safeGroups;
+    let cursor = 0;
+    for (let g = 0; g < safeGroups; g++) {
+      // Keep earlier groups compact when desired or balanced evenly
+      const size = baseSize + (g < remainder ? 1 : 0);
+      groups[g] = seededEntries.slice(cursor, cursor + size);
+      cursor += size;
     }
-  });
-  return rows;
+  } else {
+    // Snake seeding
+    seededEntries.forEach((entry, index) => {
+      const row = Math.floor(index / safeGroups);
+      const posInRow = index % safeGroups;
+      const targetGroup = row % 2 === 0 ? posInRow : safeGroups - 1 - posInRow;
+      groups[targetGroup].push(entry);
+    });
+  }
+
+  return buildRoundRobinFromGroups(
+    tournamentId,
+    stageId,
+    groups.map((entries, idx) => ({ groupNumber: idx + 1, entries })),
+    idGen
+  );
 }
 
 /**
- * Swiss pairing for the next round. Players with equal wins are paired first,
+ * Swiss pairing for the next round. Players with equal wins are paired first
+ * (preserving caller's seeded order on ties so manual/random/Elo seeding works),
  * rematches are avoided when possible, and the BYE goes to the lowest-ranked
  * player who has not had a BYE yet.
  */
@@ -319,9 +394,11 @@ export function buildSwissRound(
   const wins: Record<string, number> = {};
   const playedAgainst: Record<string, Set<string>> = {};
   const hadBye = new Set<string>();
-  entries.forEach((e) => {
+  const seedOrder = new Map<string, number>();
+  entries.forEach((e, idx) => {
     wins[e.id] = 0;
     playedAgainst[e.id] = new Set();
+    seedOrder.set(e.id, idx);
   });
   stageMatches.forEach((m) => {
     if (m.winner_entry_id && wins[m.winner_entry_id] !== undefined) wins[m.winner_entry_id] += 1;
@@ -334,7 +411,9 @@ export function buildSwissRound(
     }
   });
 
-  let pool = [...entries].sort((a, b) => wins[b.id] - wins[a.id] || b.seed_elo - a.seed_elo);
+  let pool = [...entries].sort(
+    (a, b) => wins[b.id] - wins[a.id] || (seedOrder.get(a.id) ?? 0) - (seedOrder.get(b.id) ?? 0)
+  );
   const rows: MatchRow[] = [];
   let matchNum = 1;
 
