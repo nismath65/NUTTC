@@ -27,16 +27,20 @@ export interface ParsedCsvParticipant {
   universityId: string | null;
   category: PlayerCategory;
   skillLevel: PlayerSkillLevel;
+  skillLevelDeclared: boolean;
   initialElo: number;
 }
 
 /**
- * Splits a single CSV line into trimmed fields, supporting quoted values
- * and semicolon-delimited lines (e.g., RU Excel CSV exports).
+ * Splits a single CSV/TSV line into trimmed fields, supporting quoted values,
+ * tab-separated Google Sheets/Excel pastes, comma CSVs, and semicolon EU/RU CSVs.
  */
 export function splitCsvLine(line: string): string[] {
-  const hasComma = line.includes(',');
-  const delimiter = !hasComma && line.includes(';') ? ';' : ',';
+  const delimiter = line.includes('\t')
+    ? '\t'
+    : !line.includes(',') && line.includes(';')
+    ? ';'
+    : ',';
   const cells: string[] = [];
   let current = '';
   let inQuotes = false;
@@ -66,7 +70,7 @@ export function parsePlayerCategory(raw?: string | null): PlayerCategory | null 
   if (!v) return null;
   if (v === 'student' || v.includes('студ')) return 'student';
   if (v === 'staff' || v.includes('сотруд')) return 'staff';
-  if (v === 'professor' || v === 'prof' || v.includes('професс') || v.includes('препод')) {
+  if (v === 'professor' || v === 'prof' || v.includes('професс') || v.includes('препод') || v.includes('faculty')) {
     return 'professor';
   }
   if (v === 'guest' || v === 'alumni' || v.includes('гост') || v.includes('выпуск')) {
@@ -80,28 +84,13 @@ export function parseSkillLevel(raw?: string | null): PlayerSkillLevel | null {
   if (!v) return null;
 
   if (
-    v.includes('beginner') ||
-    v.includes('newbie') ||
-    v.includes('novice') ||
-    v.includes('нович') ||
-    v.includes('начин') ||
-    v.includes('начал') ||
-    v === '800'
-  ) {
-    return 'beginner';
-  }
-
-  if (v.includes('amateur') || v.includes('casual') || v.includes('любит') || v === '1000') {
-    return 'amateur';
-  }
-
-  if (
     v.includes('intermediate') ||
     v.includes('middle') ||
     v.includes('medium') ||
     v.includes('средн') ||
     v.includes('уверен') ||
     v.includes('продолж') ||
+    v.includes('хорош') ||
     v === '1200'
   ) {
     return 'intermediate';
@@ -116,70 +105,229 @@ export function parseSkillLevel(raw?: string | null): PlayerSkillLevel | null {
     v.includes('профи') ||
     v.includes('профессионал') ||
     v.includes('высок') ||
+    v.includes('сильн') ||
+    v.includes('мастер') ||
+    v.includes('кмс') ||
     v === '1400'
   ) {
     return 'advanced';
+  }
+
+  if (
+    v.includes('beginner') ||
+    v.includes('newbie') ||
+    v.includes('novice') ||
+    v.includes('starter') ||
+    v.includes('elementary') ||
+    v.includes('basic') ||
+    v.includes('нович') ||
+    v.includes('начин') ||
+    v.includes('начал') ||
+    v.includes('базов') ||
+    v.includes('слаб') ||
+    v === '800'
+  ) {
+    return 'beginner';
+  }
+
+  if (v.includes('amateur') || v.includes('casual') || v.includes('любит') || v === '1000') {
+    return 'amateur';
+  }
+
+  return null;
+}
+
+interface CsvColumnMap {
+  nameIdx: number;
+  uniIdIdx: number | null;
+  categoryIdx: number | null;
+  levelIdx: number | null;
+}
+
+function detectHeaderColumnMap(parts: string[]): CsvColumnMap | null {
+  const lower = parts.map((p) => p.trim().toLowerCase());
+
+  const findIdx = (patterns: RegExp[]) =>
+    lower.findIndex((c) => patterns.some((re) => re.test(c)));
+
+  const nameIdx = findIdx([
+    /^(full ?name|player ?name|name|фио|имя|участник|игрок)$/,
+    /(full ?name|фио|имя и фамилия|your name|имя участника)/,
+  ]);
+  const uniIdIdx = findIdx([
+    /^(university ?id|uni ?id|student ?id|nu ?id|id)$/,
+    /(university ?id|student ?id|id студента|номер ид|айди)/,
+  ]);
+  const categoryIdx = findIdx([
+    /^(category|role|status|категория|статус)$/,
+    /(категория|student\/staff|студент\/сотрудник)/,
+  ]);
+  const levelIdx = findIdx([
+    /^(level|skill|skill ?level|tier|rating|уровень|уровень игры|навык)$/,
+    /(skill ?level|playing level|уровень|beginner|amateur|intermediate|advanced)/,
+  ]);
+
+  const hasTimestamp = /^(timestamp|отметка времени|дата)$/.test(lower[0] || '');
+  const matchedOther = [uniIdIdx, categoryIdx, levelIdx].filter((i) => i >= 0).length;
+
+  if (nameIdx >= 0 && (matchedOther > 0 || hasTimestamp || parts.length >= 2)) {
+    return {
+      nameIdx,
+      uniIdIdx: uniIdIdx >= 0 ? uniIdIdx : null,
+      categoryIdx: categoryIdx >= 0 ? categoryIdx : null,
+      levelIdx: levelIdx >= 0 ? levelIdx : null,
+    };
+  }
+
+  if (hasTimestamp && parts.length >= 2) {
+    // Google Forms header without recognizable name header: assume col 1 is name (skipping email if needed)
+    const fallbackNameIdx = lower[1]?.includes('email') || lower[1]?.includes('почт') ? 2 : 1;
+    if (fallbackNameIdx < parts.length) {
+      return {
+        nameIdx: fallbackNameIdx,
+        uniIdIdx: uniIdIdx >= 0 ? uniIdIdx : null,
+        categoryIdx: categoryIdx >= 0 ? categoryIdx : null,
+        levelIdx: levelIdx >= 0 ? levelIdx : null,
+      };
+    }
   }
 
   return null;
 }
 
 function isCsvHeaderRow(parts: string[]): boolean {
-  const col0 = (parts[0] || '').toLowerCase();
-  const rest = parts.slice(1).map((p) => p.toLowerCase());
-
-  if (/^(timestamp|отметка времени)$/.test(col0)) {
-    return true;
-  }
-
-  const col0LooksHeader = /^(full ?name|name|фио|имя|игрок|participant|участник)$/.test(col0);
-  const restHasHeader = rest.some((c) =>
-    /^(university ?id|uni ?id|id|category|категория|level|skill ?level|уровень|уровень игры)$/.test(
-      c
-    )
-  );
-  return col0LooksHeader && restHasHeader;
+  return detectHeaderColumnMap(parts) !== null;
 }
 
 function looksLikeTimestamp(value: string): boolean {
-  return /^\d{1,4}[./-]\d{1,2}[./-]\d{2,4}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$/.test(value);
+  const v = value.trim();
+  return /^\d{1,4}[./-]\d{1,2}[./-]\d{2,4}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM))?(?:\s*(?:GMT|UTC)[+-]\d{1,2}(?::?\d{2})?)?)?$/i.test(
+    v
+  );
+}
+
+function looksLikeEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 /**
- * Parses a pasted CSV line into participant registration fields.
- * Expected order:
- *   Full Name, University ID, Category (student/staff/professor/guest), Level (beginner/amateur/intermediate/advanced)
- * Also tolerates Google Forms leading Timestamp column, omitted category (3 cols ending in level),
- * and bilingual RU/EN category or level values.
+ * Parses a single CSV/TSV line into participant registration fields.
+ * Supports:
+ * - Full Name, University ID, Category, Level
+ * - Full Name, University ID, Level
+ * - Full Name, Category, Level
+ * - Full Name, Level
+ * - Leading Google Forms Timestamp and/or Email columns
+ * - Bilingual EN/RU category & skill level values
  */
-export function parseCsvParticipantLine(line: string): ParsedCsvParticipant | null {
+export function parseCsvParticipantLine(
+  line: string,
+  columnMap?: CsvColumnMap | null
+): ParsedCsvParticipant | null {
   const rawParts = splitCsvLine(line);
-  if (rawParts.length === 0 || isCsvHeaderRow(rawParts)) {
+  if (rawParts.length === 0 || (!columnMap && isCsvHeaderRow(rawParts))) {
     return null;
   }
 
-  const parts =
-    rawParts.length >= 2 && looksLikeTimestamp(rawParts[0]) ? rawParts.slice(1) : rawParts;
+  if (columnMap) {
+    const fullName = (rawParts[columnMap.nameIdx] || '').trim();
+    if (!fullName) return null;
+
+    const rawId = columnMap.uniIdIdx !== null ? (rawParts[columnMap.uniIdIdx] || '').trim() : '';
+    const rawCat =
+      columnMap.categoryIdx !== null ? rawParts[columnMap.categoryIdx] : undefined;
+    const rawLvl = columnMap.levelIdx !== null ? rawParts[columnMap.levelIdx] : undefined;
+
+    let detectedCategory = parsePlayerCategory(rawCat);
+    let detectedLevel = parseSkillLevel(rawLvl);
+
+    // Fallback scan of remaining cells if level/category weren't explicitly mapped
+    if (!detectedLevel || !detectedCategory) {
+      rawParts.forEach((cell, idx) => {
+        if (idx === columnMap.nameIdx || idx === columnMap.uniIdIdx) return;
+        if (!detectedCategory) detectedCategory = parsePlayerCategory(cell);
+        if (!detectedLevel) detectedLevel = parseSkillLevel(cell);
+      });
+    }
+
+    const skillLevel = detectedLevel ?? DEFAULT_SKILL_LEVEL;
+    return {
+      fullName,
+      universityId: rawId || null,
+      category: detectedCategory ?? 'student',
+      skillLevel,
+      skillLevelDeclared: detectedLevel !== null,
+      initialElo: getInitialEloForLevel(skillLevel),
+    };
+  }
+
+  let parts = rawParts;
+  if (parts.length >= 2 && looksLikeTimestamp(parts[0])) {
+    parts = parts.slice(1);
+  }
+  if (parts.length >= 2 && looksLikeEmail(parts[0])) {
+    parts = parts.slice(1);
+  }
 
   const fullName = (parts[0] || '').trim();
   if (!fullName) return null;
 
-  const universityId = (parts[1] || '').trim() || null;
-  const col2 = parts[2] || '';
-  const col3 = parts[3] || '';
+  let universityId: string | null = null;
+  let detectedCategory: PlayerCategory | null = null;
+  let detectedLevel: PlayerSkillLevel | null = null;
 
-  const catFromCol2 = parsePlayerCategory(col2);
-  const levelFromCol3 = parseSkillLevel(col3);
-  const levelFromCol2 = !catFromCol2 && !col3 ? parseSkillLevel(col2) : null;
+  for (let i = 1; i < parts.length; i++) {
+    const cell = (parts[i] || '').trim();
+    if (!cell || looksLikeEmail(cell)) continue;
 
-  const category: PlayerCategory = catFromCol2 ?? 'student';
-  const skillLevel: PlayerSkillLevel = levelFromCol3 ?? levelFromCol2 ?? DEFAULT_SKILL_LEVEL;
+    const cat = parsePlayerCategory(cell);
+    if (cat && !detectedCategory) {
+      detectedCategory = cat;
+      continue;
+    }
 
+    const lvl = parseSkillLevel(cell);
+    if (lvl && !detectedLevel) {
+      detectedLevel = lvl;
+      continue;
+    }
+
+    if (!universityId) {
+      universityId = cell;
+    }
+  }
+
+  const skillLevel = detectedLevel ?? DEFAULT_SKILL_LEVEL;
   return {
     fullName,
     universityId,
-    category,
+    category: detectedCategory ?? 'student',
     skillLevel,
+    skillLevelDeclared: detectedLevel !== null,
     initialElo: getInitialEloForLevel(skillLevel),
   };
+}
+
+/**
+ * Parses a multi-line pasted CSV/TSV block. Detects an optional header row
+ * so column order and extra Google Forms columns are handled reliably.
+ */
+export function parseCsvParticipantsBatch(text: string): ParsedCsvParticipant[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return [];
+
+  const firstParts = splitCsvLine(lines[0]);
+  const headerMap = detectHeaderColumnMap(firstParts);
+  const startIdx = headerMap ? 1 : 0;
+
+  const parsed: ParsedCsvParticipant[] = [];
+  for (let i = startIdx; i < lines.length; i++) {
+    const item = parseCsvParticipantLine(lines[i], headerMap);
+    if (item) parsed.push(item);
+  }
+  return parsed;
 }

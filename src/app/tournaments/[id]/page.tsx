@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import {
   Download,
+  Upload,
   Unlock,
   Eye,
   FlaskConical,
@@ -18,6 +19,7 @@ import {
   Check,
   X,
   Trash2,
+  Ban,
   Search,
   PanelRightClose,
   PanelRightOpen,
@@ -41,15 +43,19 @@ import {
   computeStageStandings,
   completeTournamentAndAssignMedals,
   findStageIntegrityIssues,
+  getTournamentLifecyclePermissions,
+  updateTournamentDetails,
+  deleteUnstartedTournament,
   SeedingMode,
 } from '@/lib/tournamentEngine';
-import { parseCsvParticipantLine } from '@/lib/playerLevels';
+import { parseCsvParticipantsBatch } from '@/lib/playerLevels';
 import {
   Tournament,
   TournamentStage,
   TournamentEntry,
   Player,
   Match,
+  MatchType,
   TournamentStatus,
   StageFormat,
   AttendanceStatus,
@@ -57,8 +63,18 @@ import {
 
 const TOTAL_TABLES = 8;
 
+function toLocalDateTimeInput(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`;
+}
+
 export default function TournamentDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const { locale, t } = useLanguage();
   const { isStaff } = useAuth();
 
@@ -79,7 +95,19 @@ export default function TournamentDetailPage() {
   const [showSwapBar, setShowSwapBar] = useState(false);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [csvText, setCsvText] = useState('');
+  const [applyLevelToUnplayed, setApplyLevelToUnplayed] = useState(true);
   const [participantSearch, setParticipantSearch] = useState('');
+  const [seedDrafts, setSeedDrafts] = useState<Record<string, string>>({});
+
+  // Tournament Edit / Cancel / Delete states
+  const [showEditPanel, setShowEditPanel] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDate, setEditDate] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editMatchType, setEditMatchType] = useState<MatchType>('singles');
+  const [editBestOf, setEditBestOf] = useState<number>(3);
+  const [editIsRated, setEditIsRated] = useState<boolean>(true);
+  const [confirmDeleteTournament, setConfirmDeleteTournament] = useState(false);
 
   // Concurrency / double-click guards
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -89,8 +117,11 @@ export default function TournamentDetailPage() {
   const loadSeqRef = useRef(0);
   const realtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Seeding & Swap Controls
+  // Seeding, Preliminary Draw & Swap Controls
   const [seedingMode, setSeedingMode] = useState<SeedingMode>('elo');
+  const [drawPoolOverride, setDrawPoolOverride] = useState<'auto' | 'preliminary' | 'checked_in'>(
+    'auto'
+  );
   const [swapEntryA, setSwapEntryA] = useState<string>('');
   const [swapEntryB, setSwapEntryB] = useState<string>('');
 
@@ -255,6 +286,48 @@ export default function TournamentDetailPage() {
     () => entries.filter((e) => e.attendance === 'checked_in'),
     [entries]
   );
+  const activeEntries = useMemo(
+    () => entries.filter((e) => e.attendance !== 'no_show'),
+    [entries]
+  );
+
+  // Use preliminary pool (all non-no-show registrants) when overridden or before check-in completes
+  const effectiveDrawPool: 'preliminary' | 'checked_in' =
+    drawPoolOverride !== 'auto'
+      ? drawPoolOverride
+      : checkedInEntries.length >= 2 || tournament?.status === 'in_progress'
+      ? 'checked_in'
+      : 'preliminary';
+
+  const drawEntries = effectiveDrawPool === 'preliminary' ? activeEntries : checkedInEntries;
+
+  const entryGroupMap = useMemo(() => {
+    const map = new Map<string, number>();
+    if (currentStage?.format === 'round_robin') {
+      stageMatches.forEach((m) => {
+        const g = m.group_number || 1;
+        if (m.entry1_id && !map.has(m.entry1_id)) map.set(m.entry1_id, g);
+        if (m.entry2_id && !map.has(m.entry2_id)) map.set(m.entry2_id, g);
+      });
+    }
+    return map;
+  }, [stageMatches, currentStage?.format]);
+
+  const csvPreview = useMemo(() => parseCsvParticipantsBatch(csvText), [csvText]);
+
+  const lifecyclePerms = useMemo(() => {
+    if (!tournament) {
+      return {
+        isPreStartStatus: false,
+        hasStartedMatches: false,
+        canEditMetadata: false,
+        canEditStructure: false,
+        canCancel: false,
+        canDelete: false,
+      };
+    }
+    return getTournamentLifecyclePermissions(tournament.status, matches);
+  }, [tournament, matches]);
 
   const integrityIssues = useMemo(() => {
     if (!currentStage || stageMatches.length === 0) return [];
@@ -317,6 +390,73 @@ export default function TournamentDetailPage() {
     setTournament({ ...tournament, status: newStatus });
   };
 
+  const openEditTournamentPanel = () => {
+    if (!tournament) return;
+    setEditTitle(tournament.title);
+    setEditDate(toLocalDateTimeInput(tournament.event_date));
+    setEditDescription(tournament.description || '');
+    setEditMatchType(tournament.type);
+    setEditBestOf(tournament.best_of);
+    setEditIsRated(tournament.is_rated);
+    setConfirmDeleteTournament(false);
+    setShowEditPanel((prev) => !prev);
+  };
+
+  const handleSaveTournamentEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tournament || !editTitle.trim() || !editDate || actionLockRef.current) return;
+    actionLockRef.current = true;
+    setBusyAction('edit_tournament');
+    setEngineMsg(null);
+    try {
+      await updateTournamentDetails(tournament.id, {
+        title: editTitle,
+        description: editDescription.trim() || null,
+        event_date: new Date(editDate).toISOString(),
+        type: editMatchType,
+        best_of: editBestOf,
+        is_rated: editIsRated,
+      });
+      setShowEditPanel(false);
+      setEngineMsg({
+        text: locale === 'ru' ? '✓ Данные турнира обновлены' : '✓ Tournament details updated',
+      });
+      await loadTournamentData();
+    } catch (err: unknown) {
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error',
+        isError: true,
+      });
+    } finally {
+      actionLockRef.current = false;
+      setBusyAction(null);
+    }
+  };
+
+  const handleDeleteCurrentTournament = async () => {
+    if (!tournament || actionLockRef.current) return;
+    if (!confirmDeleteTournament) {
+      setConfirmDeleteTournament(true);
+      return;
+    }
+    actionLockRef.current = true;
+    setBusyAction('delete_tournament');
+    setEngineMsg(null);
+    try {
+      await deleteUnstartedTournament(tournament.id);
+      router.push('/');
+      router.refresh();
+    } catch (err: unknown) {
+      setConfirmDeleteTournament(false);
+      setEngineMsg({
+        text: err instanceof Error ? err.message : 'Error',
+        isError: true,
+      });
+      actionLockRef.current = false;
+      setBusyAction(null);
+    }
+  };
+
   const handleStageFormatChange = async (stageId: string, newFormat: StageFormat) => {
     if (isStageStructureLocked) return;
     await supabase.from('tournament_stages').update({ format: newFormat }).eq('id', stageId);
@@ -335,16 +475,24 @@ export default function TournamentDetailPage() {
     setConfirmRedraw(false);
     setEngineMsg(null);
     try {
+      const isPreliminary = effectiveDrawPool === 'preliminary';
       await generateStageDraw(
         tournament.id,
         currentStage.id,
         currentStage.format,
-        checkedInEntries,
+        drawEntries,
         groupCount,
         false,
-        seedingMode
+        seedingMode,
+        { preliminary: isPreliminary }
       );
-      setEngineMsg({ text: '✓ Сетка сформирована / Draw generated!' });
+      setEngineMsg({
+        text: isPreliminary
+          ? locale === 'ru'
+            ? '✓ Предварительная сетка / группы сформированы (до Check-In)'
+            : '✓ Preliminary draw / groups generated (pre-check-in)'
+          : '✓ Сетка сформирована / Draw generated!',
+      });
       await loadTournamentData();
     } catch (err: unknown) {
       setEngineMsg({
@@ -363,7 +511,7 @@ export default function TournamentDetailPage() {
     setBusyAction('swiss');
     setEngineMsg(null);
     try {
-      await generateNextSwissRound(tournament.id, currentStage.id, checkedInEntries, matches);
+      await generateNextSwissRound(tournament.id, currentStage.id, drawEntries, matches);
       await loadTournamentData();
     } catch (err: unknown) {
       setEngineMsg({
@@ -526,7 +674,7 @@ export default function TournamentDetailPage() {
       ['Tournament', tournament.title],
       ['Date', new Date(tournament.event_date).toLocaleDateString('ru-RU')],
       [],
-      ['Placement', 'Participant', 'University ID', 'Seed Elo', 'Attendance'],
+      ['Placement', 'Participant', 'University ID', 'Category', 'Seed Elo', 'Attendance'],
     ];
 
     entries.forEach((e) => {
@@ -534,6 +682,7 @@ export default function TournamentDetailPage() {
         e.final_placement ? String(e.final_placement) : '',
         formatEntryName(e),
         e.player1?.university_id || '',
+        e.player1?.category || '',
         String(e.seed_elo),
         e.attendance,
       ]);
@@ -567,26 +716,28 @@ export default function TournamentDetailPage() {
     link.click();
   };
 
+  const handleCsvFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setCsvText(text);
+    e.target.value = '';
+  };
+
   // --- GOOGLE FORMS CSV IMPORT ---
   const handleCsvImport = async () => {
     if (!tournament || !csvText.trim() || actionLockRef.current) return;
     actionLockRef.current = true;
     setBusyAction('csv');
     try {
-      const lines = csvText
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
-
+      const parsedRows = parseCsvParticipantsBatch(csvText);
       const knownPlayers = [...allPlayers];
       const seenIds = new Set(registeredPlayerIds);
       let importedCount = 0;
       let skippedDuplicates = 0;
+      let calibratedExisting = 0;
 
-      for (const line of lines) {
-        const parsed = parseCsvParticipantLine(line);
-        if (!parsed) continue;
-
+      for (const parsed of parsedRows) {
         let playerRecord = knownPlayers.find(
           (p) =>
             (parsed.universityId && p.university_id === parsed.universityId) ||
@@ -594,7 +745,7 @@ export default function TournamentDetailPage() {
         );
 
         // New players get starting Elo from their declared skill level;
-        // existing players keep their earned club Elo rating.
+        // existing players keep earned Elo (unless 0 matches played & applyLevelToUnplayed is checked).
         if (!playerRecord) {
           const { data: created } = await supabase
             .from('players')
@@ -609,6 +760,23 @@ export default function TournamentDetailPage() {
           if (created) {
             playerRecord = created as Player;
             knownPlayers.push(playerRecord);
+          }
+        } else if (
+          applyLevelToUnplayed &&
+          parsed.skillLevelDeclared &&
+          playerRecord.wins === 0 &&
+          playerRecord.losses === 0 &&
+          playerRecord.elo_rating !== parsed.initialElo
+        ) {
+          const { data: updatedPlayer } = await supabase
+            .from('players')
+            .update({ elo_rating: parsed.initialElo })
+            .eq('id', playerRecord.id)
+            .select()
+            .single();
+          if (updatedPlayer) {
+            playerRecord = updatedPlayer as Player;
+            calibratedExisting++;
           }
         }
 
@@ -632,9 +800,24 @@ export default function TournamentDetailPage() {
 
       setCsvText('');
       setShowCsvImport(false);
+      const notes: string[] = [];
+      if (calibratedExisting > 0) {
+        notes.push(
+          locale === 'ru'
+            ? `обновлён стартовый Эло: ${calibratedExisting}`
+            : `starting Elo updated: ${calibratedExisting}`
+        );
+      }
+      if (skippedDuplicates > 0) {
+        notes.push(
+          locale === 'ru'
+            ? `пропущено дубликатов: ${skippedDuplicates}`
+            : `duplicates skipped: ${skippedDuplicates}`
+        );
+      }
       setRegMessage(
-        skippedDuplicates > 0
-          ? `✓ Импортировано: ${importedCount} (пропущено дубликатов: ${skippedDuplicates})`
+        notes.length > 0
+          ? `✓ Импортировано: ${importedCount} (${notes.join(', ')})`
           : `✓ Импортировано из CSV: ${importedCount}`
       );
       await loadTournamentData();
@@ -816,6 +999,21 @@ export default function TournamentDetailPage() {
                 <span>CSV</span>
               </button>
 
+              {isJuryMode && lifecyclePerms.canEditMetadata && (
+                <button
+                  type="button"
+                  onClick={openEditTournamentPanel}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    showEditPanel
+                      ? 'bg-[#1D4ED8] text-white border-[#1D4ED8]'
+                      : 'bg-white text-[#53605A] border-[#E3DED2] hover:bg-[#FAF8F4]'
+                  }`}
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                  <span>{locale === 'ru' ? 'Редактировать' : 'Edit'}</span>
+                </button>
+              )}
+
               {isStaff && (
                 <button
                   type="button"
@@ -881,6 +1079,173 @@ export default function TournamentDetailPage() {
           </div>
         </div>
 
+        {/* INLINE TOURNAMENT EDIT / CANCEL / DELETE PANEL */}
+        {isJuryMode && showEditPanel && (
+          <form
+            onSubmit={handleSaveTournamentEdit}
+            className="bg-[#FAF8F4] border-t border-[#E3DED2] px-5 py-4 space-y-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[#53605A]">
+                {locale === 'ru' ? 'Настройки турнира' : 'Tournament Settings'}
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                {tournament.status === 'archived' ? (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={() => handleStatusChange('scheduled')}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-[#BFDBFE] bg-[#EFF6FF] text-[#1D4ED8] hover:bg-[#DBEAFE]"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>{locale === 'ru' ? 'Восстановить турнир' : 'Restore Tournament'}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null || !lifecyclePerms.canCancel}
+                    onClick={() => handleStatusChange('archived')}
+                    title={
+                      lifecyclePerms.canCancel
+                        ? undefined
+                        : locale === 'ru'
+                        ? 'Отмена доступна только до начала матчей'
+                        : 'Cancel is only available before matches start'
+                    }
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-[#EDD6A3] bg-[#FEF7E6] text-[#784A04] hover:bg-[#FDECC8] disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Ban className="w-3.5 h-3.5" />
+                    <span>{locale === 'ru' ? 'Отменить турнир' : 'Cancel Tournament'}</span>
+                  </button>
+                )}
+
+                {lifecyclePerms.canDelete ? (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={handleDeleteCurrentTournament}
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                      confirmDeleteTournament
+                        ? 'bg-[#C2412D] text-white hover:bg-[#A33322]'
+                        : 'border border-[#F0C9C2] bg-[#FBECE9] text-[#C2412D] hover:bg-[#F6DCD6]'
+                    }`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>
+                      {confirmDeleteTournament
+                        ? locale === 'ru'
+                          ? 'Подтвердить удаление'
+                          : 'Confirm Delete'
+                        : locale === 'ru'
+                        ? 'Удалить турнир'
+                        : 'Delete Tournament'}
+                    </span>
+                  </button>
+                ) : (
+                  <span
+                    title={
+                      locale === 'ru'
+                        ? 'Удалять можно только не начатые турниры без сыгранных матчей'
+                        : 'Only unstarted tournaments with no played matches can be deleted'
+                    }
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border border-[#E3DED2] bg-white text-[#828E88]"
+                  >
+                    <Lock className="w-3 h-3" />
+                    <span>{locale === 'ru' ? 'Удаление заблокировано' : 'Delete Locked'}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                  {t.Staff.tournamentTitle}
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                  {t.Staff.eventDate}
+                </label>
+                <input
+                  type="datetime-local"
+                  required
+                  value={editDate}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                  {t.Staff.matchType}
+                </label>
+                <select
+                  disabled={!lifecyclePerms.canEditStructure}
+                  value={editMatchType}
+                  onChange={(e) => setEditMatchType(e.target.value as MatchType)}
+                  className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs disabled:opacity-50"
+                >
+                  <option value="singles">{t.Tournaments.singles}</option>
+                  <option value="doubles">{t.Tournaments.doubles}</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                  {t.Staff.bestOf}
+                </label>
+                <select
+                  disabled={!lifecyclePerms.canEditStructure}
+                  value={editBestOf}
+                  onChange={(e) => setEditBestOf(Number(e.target.value))}
+                  className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs disabled:opacity-50"
+                >
+                  <option value={1}>Bo1</option>
+                  <option value={3}>Bo3</option>
+                  <option value={5}>Bo5</option>
+                  <option value={7}>Bo7</option>
+                </select>
+              </div>
+              <div className="sm:col-span-2 lg:col-span-3">
+                <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                  {t.Staff.description}
+                </label>
+                <input
+                  type="text"
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs"
+                />
+              </div>
+              <div className="flex items-end justify-between gap-3">
+                <label className="inline-flex items-center gap-1.5 text-xs font-medium text-[#53605A] pb-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    disabled={!lifecyclePerms.canEditStructure}
+                    checked={editIsRated}
+                    onChange={(e) => setEditIsRated(e.target.checked)}
+                    className="accent-[#1D4ED8]"
+                  />
+                  <span>{locale === 'ru' ? 'Рейтинг Elo' : 'Rated Elo'}</span>
+                </label>
+                <button
+                  type="submit"
+                  disabled={busyAction !== null}
+                  className="bg-[#1D4ED8] text-white px-4 py-1.5 rounded-lg text-xs font-semibold hover:bg-[#1E40AF] disabled:opacity-50"
+                >
+                  {locale === 'ru' ? 'Сохранить' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+
         {/* FULL-WIDTH CLEAN JURY TOOLBAR */}
         {isJuryMode && (
           <div className="bg-[#FAF8F4] border-t border-[#E3DED2] px-5 py-4 space-y-3">
@@ -929,7 +1294,7 @@ export default function TournamentDetailPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2.5 items-end">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5 items-end">
               <div>
                 <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
                   {t.TournamentDetail.changeStatus}
@@ -946,6 +1311,7 @@ export default function TournamentDetailPage() {
                   <option value="check_in">{t.Tournaments.status.check_in}</option>
                   <option value="in_progress">{t.Tournaments.status.in_progress}</option>
                   <option value="completed">{t.Tournaments.status.completed}</option>
+                  <option value="archived">{t.Tournaments.status.archived}</option>
                 </select>
               </div>
 
@@ -990,6 +1356,30 @@ export default function TournamentDetailPage() {
                 </select>
               </div>
 
+              <div>
+                <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
+                  {locale === 'ru' ? 'Участники для сетки' : 'Draw Pool'}
+                </label>
+                <select
+                  value={effectiveDrawPool}
+                  onChange={(e) =>
+                    setDrawPoolOverride(e.target.value as 'preliminary' | 'checked_in')
+                  }
+                  className="w-full border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs font-medium"
+                >
+                  <option value="preliminary">
+                    {locale === 'ru'
+                      ? `Предварит. (${activeEntries.length})`
+                      : `Preliminary (${activeEntries.length})`}
+                  </option>
+                  <option value="checked_in">
+                    {locale === 'ru'
+                      ? `Только Check-In (${checkedInEntries.length})`
+                      : `Checked-In (${checkedInEntries.length})`}
+                  </option>
+                </select>
+              </div>
+
               {currentStage?.format === 'round_robin' && (
                 <div>
                   <label className="block text-[11px] font-semibold text-[#53605A] mb-1">
@@ -1008,7 +1398,7 @@ export default function TournamentDetailPage() {
                 </div>
               )}
 
-              <div className="col-span-2 lg:col-span-2 flex flex-wrap gap-2">
+              <div className="col-span-2 flex flex-wrap gap-2">
                 <button
                   type="button"
                   disabled={busyAction !== null}
@@ -1027,7 +1417,11 @@ export default function TournamentDetailPage() {
                       ? locale === 'ru'
                         ? 'Подтвердить сброс и перегенерацию'
                         : 'Confirm Reset & Redraw'
-                      : `${t.TournamentDetail.generateDrawBtn.replace(/^[^\wА-Яа-яЁё]+\s*/, '')} (${checkedInEntries.length})`}
+                      : effectiveDrawPool === 'preliminary'
+                      ? locale === 'ru'
+                        ? `Предварительная сетка (${drawEntries.length})`
+                        : `Preliminary Draw (${drawEntries.length})`
+                      : `${t.TournamentDetail.generateDrawBtn.replace(/^[^\wА-Яа-яЁё]+\s*/, '')} (${drawEntries.length})`}
                   </span>
                 </button>
 
@@ -1061,6 +1455,14 @@ export default function TournamentDetailPage() {
               </div>
             </div>
 
+            {effectiveDrawPool === 'preliminary' && (
+              <p className="text-[11px] text-[#53605A]">
+                {locale === 'ru'
+                  ? 'Предварительный режим: группы/сетка строятся по всем активным заявкам до Check-In, статус турнира не переключается на «Идёт».'
+                  : 'Preliminary mode: builds groups/bracket from registered entries before check-in without switching tournament status to In Progress.'}
+              </p>
+            )}
+
             {showSwapBar && stageMatches.length > 0 && (
               <div className="pt-2.5 border-t border-[#E3DED2] flex flex-wrap items-center gap-2">
                 <select
@@ -1069,11 +1471,15 @@ export default function TournamentDetailPage() {
                   className="flex-1 min-w-[160px] border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs"
                 >
                   <option value="">Игрок А...</option>
-                  {checkedInEntries.map((ce) => (
-                    <option key={ce.id} value={ce.id}>
-                      {formatEntryName(ce)}
-                    </option>
-                  ))}
+                  {activeEntries.map((ce) => {
+                    const gNum = entryGroupMap.get(ce.id);
+                    return (
+                      <option key={ce.id} value={ce.id}>
+                        {gNum ? `[G${gNum}] ` : ''}
+                        {formatEntryName(ce)}
+                      </option>
+                    );
+                  })}
                 </select>
                 <ArrowLeftRight className="w-3.5 h-3.5 text-[#828E88]" />
                 <select
@@ -1082,11 +1488,15 @@ export default function TournamentDetailPage() {
                   className="flex-1 min-w-[160px] border border-[#E3DED2] bg-white rounded-lg px-2.5 py-1.5 text-xs"
                 >
                   <option value="">Игрок Б...</option>
-                  {checkedInEntries.map((ce) => (
-                    <option key={ce.id} value={ce.id}>
-                      {formatEntryName(ce)}
-                    </option>
-                  ))}
+                  {activeEntries.map((ce) => {
+                    const gNum = entryGroupMap.get(ce.id);
+                    return (
+                      <option key={ce.id} value={ce.id}>
+                        {gNum ? `[G${gNum}] ` : ''}
+                        {formatEntryName(ce)}
+                      </option>
+                    );
+                  })}
                 </select>
                 <button
                   type="button"
@@ -1183,7 +1593,7 @@ export default function TournamentDetailPage() {
                   isJuryMode={isJuryMode}
                   fastTestMode={fastTestMode}
                   manualSlotEditMode={manualSlotEditMode}
-                  checkedInEntries={checkedInEntries}
+                  checkedInEntries={activeEntries}
                   busyMatchId={busyMatchId}
                   flaggedMatchIds={flaggedMatchIds}
                   formatEntryName={formatEntryName}
@@ -1209,7 +1619,7 @@ export default function TournamentDetailPage() {
                     isJuryMode={isJuryMode}
                     fastTestMode={fastTestMode}
                     manualSlotEditMode={manualSlotEditMode}
-                    checkedInEntries={checkedInEntries}
+                    checkedInEntries={activeEntries}
                     busyMatchId={busyMatchId}
                     flaggedMatchIds={flaggedMatchIds}
                     formatEntryName={formatEntryName}
@@ -1241,7 +1651,7 @@ export default function TournamentDetailPage() {
                       isJuryMode={isJuryMode}
                       fastTestMode={fastTestMode}
                       manualSlotEditMode={manualSlotEditMode}
-                      checkedInEntries={checkedInEntries}
+                      checkedInEntries={activeEntries}
                       busyMatchId={busyMatchId}
                       flaggedMatchIds={flaggedMatchIds}
                       formatEntryName={formatEntryName}
@@ -1269,7 +1679,7 @@ export default function TournamentDetailPage() {
                       isJuryMode={isJuryMode}
                       fastTestMode={fastTestMode}
                       manualSlotEditMode={manualSlotEditMode}
-                      checkedInEntries={checkedInEntries}
+                      checkedInEntries={activeEntries}
                       busyMatchId={busyMatchId}
                       flaggedMatchIds={flaggedMatchIds}
                       formatEntryName={formatEntryName}
@@ -1871,11 +2281,23 @@ export default function TournamentDetailPage() {
 
           {showCsvImport && isJuryMode && (
             <div className="bg-[#FAF8F4] border border-[#E3DED2] rounded-xl p-4 space-y-3">
-              <p className="text-[11px] text-[#53605A]">
-                {locale === 'ru'
-                  ? 'Уровень задаёт стартовый Эло для новых игроков: beginner = 800 · amateur = 1000 · intermediate = 1200 · advanced = 1400 (у существующих рейтинг сохраняется).'
-                  : 'Level sets starting Elo for new players: beginner = 800 · amateur = 1000 · intermediate = 1200 · advanced = 1400 (existing players keep their earned Elo).'}
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] text-[#53605A]">
+                  {locale === 'ru'
+                    ? 'Формат CSV/TSV: ФИО, ID, категория, уровень (beginner = 800 · amateur = 1000 · intermediate = 1200 · advanced = 1400). Также поддерживаются вставка из Google Таблиц, заголовки и 2–3 колонки (ФИО, уровень).'
+                    : 'CSV/TSV format: Name, ID, category, level (beginner = 800 · amateur = 1000 · intermediate = 1200 · advanced = 1400). Supports Google Sheets paste, headers, and 2–3 columns (Name, Level).'}
+                </p>
+                <label className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg border border-[#E3DED2] bg-white hover:bg-[#F1EDE4] text-[#53605A] cursor-pointer shrink-0">
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{locale === 'ru' ? 'Загрузить .csv' : 'Upload .csv'}</span>
+                  <input
+                    type="file"
+                    accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values"
+                    onChange={handleCsvFileUpload}
+                    className="hidden"
+                  />
+                </label>
+              </div>
               <textarea
                 rows={4}
                 value={csvText}
@@ -1883,14 +2305,48 @@ export default function TournamentDetailPage() {
                 placeholder={t.TournamentDetail.csvPlaceholder}
                 className="w-full border border-[#E3DED2] bg-white rounded-lg p-2.5 text-xs font-mono"
               />
-              <button
-                type="button"
-                disabled={busyAction !== null}
-                onClick={handleCsvImport}
-                className="bg-[#1D4ED8] text-white px-4 py-1.5 rounded-lg text-xs font-semibold hover:bg-[#1E40AF] disabled:opacity-50"
-              >
-                {t.TournamentDetail.csvImportBtn}
-              </button>
+              {csvPreview.length > 0 && (
+                <div className="bg-white border border-[#E3DED2] rounded-lg px-3 py-2 text-[11px] text-[#53605A] flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className="font-semibold text-[#18211D]">
+                    {locale === 'ru'
+                      ? `Распознано строк: ${csvPreview.length}`
+                      : `Parsed rows: ${csvPreview.length}`}
+                  </span>
+                  {(['beginner', 'amateur', 'intermediate', 'advanced'] as const).map((lvl) => {
+                    const count = csvPreview.filter((r) => r.skillLevel === lvl).length;
+                    if (count === 0) return null;
+                    return (
+                      <span key={lvl} className="font-num text-[#1D4ED8]">
+                        {lvl}: {count}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="inline-flex items-center gap-2 text-xs text-[#53605A] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={applyLevelToUnplayed}
+                    onChange={(e) => setApplyLevelToUnplayed(e.target.checked)}
+                    className="rounded border-[#CCC5B6] accent-[#1D4ED8]"
+                  />
+                  <span>
+                    {locale === 'ru'
+                      ? 'Обновлять Эло по уровню у игроков с 0 матчей (0W–0L)'
+                      : 'Apply level Elo to existing players with 0 played matches'}
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  disabled={busyAction !== null || csvPreview.length === 0}
+                  onClick={handleCsvImport}
+                  className="bg-[#1D4ED8] text-white px-4 py-1.5 rounded-lg text-xs font-semibold hover:bg-[#1E40AF] disabled:opacity-50"
+                >
+                  {t.TournamentDetail.csvImportBtn}
+                  {csvPreview.length > 0 ? ` (${csvPreview.length})` : ''}
+                </button>
+              </div>
             </div>
           )}
 
@@ -1992,34 +2448,57 @@ export default function TournamentDetailPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#EFECE4]">
-              {filteredEntries.map((entry, idx) => (
-                <tr key={entry.id} className="hover:bg-[#FAF8F4]">
-                  <td className="p-3 text-[#828E88] w-24 font-num">
-                    {isJuryMode ? (
-                      <input
-                        type="number"
-                        min={1}
-                        value={entry.seed_number ?? idx + 1}
-                        onFocus={(e) => e.target.select()}
-                        onChange={(e) =>
-                          handleSeedNumberChange(entry.id, Number(e.target.value))
-                        }
-                        className="w-14 border border-[#E3DED2] bg-white rounded-md px-1.5 py-0.5 text-xs font-bold text-center text-[#18211D]"
-                        title="Задайте номер посева вручную и выберите «Ручной (Seed #)» при генерации сетки"
-                      />
-                    ) : (
-                      entry.seed_number ?? idx + 1
-                    )}
-                  </td>
-                  <td className="p-3 font-medium text-[#18211D]">
-                    {entry.final_placement === 1 && '🥇 '}
-                    {entry.final_placement === 2 && '🥈 '}
-                    {entry.final_placement === 3 && '🥉 '}
-                    {formatEntryName(entry)}
-                  </td>
-                  <td className="p-3 font-num font-semibold text-[#1D4ED8]">
-                    {entry.seed_elo}
-                  </td>
+              {filteredEntries.map((entry, idx) => {
+                const draftSeed = seedDrafts[entry.id];
+                const gNum = entryGroupMap.get(entry.id);
+                return (
+                  <tr key={entry.id} className="hover:bg-[#FAF8F4]">
+                    <td className="p-3 text-[#828E88] w-24 font-num">
+                      {isJuryMode ? (
+                        <input
+                          type="number"
+                          min={1}
+                          value={draftSeed ?? String(entry.seed_number ?? idx + 1)}
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) =>
+                            setSeedDrafts({ ...seedDrafts, [entry.id]: e.target.value })
+                          }
+                          onBlur={() => {
+                            if (draftSeed === undefined) return;
+                            const num = Math.max(1, Number(draftSeed) || idx + 1);
+                            const nextDrafts = { ...seedDrafts };
+                            delete nextDrafts[entry.id];
+                            setSeedDrafts(nextDrafts);
+                            if (num !== entry.seed_number) {
+                              handleSeedNumberChange(entry.id, num);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              (e.target as HTMLInputElement).blur();
+                            }
+                          }}
+                          className="w-14 border border-[#E3DED2] bg-white rounded-md px-1.5 py-0.5 text-xs font-bold text-center text-[#18211D]"
+                          title="Задайте номер посева вручную и выберите «Ручной (Seed #)» при генерации сетки"
+                        />
+                      ) : (
+                        entry.seed_number ?? idx + 1
+                      )}
+                    </td>
+                    <td className="p-3 font-medium text-[#18211D]">
+                      {entry.final_placement === 1 && '🥇 '}
+                      {entry.final_placement === 2 && '🥈 '}
+                      {entry.final_placement === 3 && '🥉 '}
+                      {formatEntryName(entry)}
+                      {gNum && (
+                        <span className="ml-2 font-num text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]">
+                          G{gNum}
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3 font-num font-semibold text-[#1D4ED8]">
+                      {entry.seed_elo}
+                    </td>
                   <td className="p-3">
                     <span
                       className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
@@ -2070,7 +2549,8 @@ export default function TournamentDetailPage() {
                     </td>
                   )}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -39,7 +39,9 @@ export default function HomePage() {
     loadTournaments();
   }, []);
 
-  const upcoming = tournaments.filter((item) => item.status !== 'completed');
+  const upcoming = tournaments.filter(
+    (item) => item.status !== 'completed' && item.status !== 'archived'
+  );
   const completed = tournaments.filter((item) => item.status === 'completed');
 
   const formatEntry = (e: TournamentEntry) =>

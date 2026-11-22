@@ -1,5 +1,11 @@
 import { supabase } from './supabase';
-import { TournamentEntry, Match, StageFormat } from '@/types/database';
+import {
+  TournamentEntry,
+  Match,
+  StageFormat,
+  MatchType,
+  TournamentStatus,
+} from '@/types/database';
 import {
   MatchRow,
   buildSingleElimination,
@@ -138,7 +144,8 @@ export async function generateStageDraw(
   entriesToUse: TournamentEntry[],
   groupCount: number = 2,
   preserveOrder: boolean = false,
-  seedingMode: SeedingMode = 'elo'
+  seedingMode: SeedingMode = 'elo',
+  options?: { preliminary?: boolean }
 ) {
   if (entriesToUse.length < 2) {
     throw new Error('Минимум 2 участника / Need at least 2 entries');
@@ -199,8 +206,12 @@ export async function generateStageDraw(
     )
   );
 
-  await supabase.from('tournament_stages').update({ status: 'in_progress' }).eq('id', stageId);
-  await supabase.from('tournaments').update({ status: 'in_progress' }).eq('id', tournamentId);
+  if (options?.preliminary) {
+    await supabase.from('tournament_stages').update({ status: 'pending' }).eq('id', stageId);
+  } else {
+    await supabase.from('tournament_stages').update({ status: 'in_progress' }).eq('id', stageId);
+    await supabase.from('tournaments').update({ status: 'in_progress' }).eq('id', tournamentId);
+  }
 }
 
 const CONCURRENT_DRAW_MSG =
@@ -789,4 +800,146 @@ export async function completeTournamentAndAssignMedals(
   }
 
   await supabase.from('tournaments').update({ status: 'completed' }).eq('id', tournamentId);
+}
+
+export interface TournamentLifecyclePermissions {
+  isPreStartStatus: boolean;
+  hasStartedMatches: boolean;
+  canEditMetadata: boolean;
+  canEditStructure: boolean;
+  canCancel: boolean;
+  canDelete: boolean;
+}
+
+export function getTournamentLifecyclePermissions(
+  status: TournamentStatus,
+  matches: Array<Pick<Match, 'status'>>
+): TournamentLifecyclePermissions {
+  const isPreStartStatus =
+    status === 'scheduled' ||
+    status === 'registration_open' ||
+    status === 'check_in' ||
+    status === 'archived';
+  const hasStartedMatches = matches.some(
+    (m) => m.status === 'completed' || m.status === 'in_progress'
+  );
+  return {
+    isPreStartStatus,
+    hasStartedMatches,
+    canEditMetadata: status !== 'completed',
+    canEditStructure: isPreStartStatus && !hasStartedMatches,
+    canCancel: isPreStartStatus && status !== 'archived' && !hasStartedMatches,
+    canDelete: isPreStartStatus && !hasStartedMatches,
+  };
+}
+
+export async function updateTournamentDetails(
+  tournamentId: string,
+  updates: {
+    title: string;
+    description: string | null;
+    event_date: string;
+    type?: MatchType;
+    best_of?: number;
+    is_rated?: boolean;
+    stage1Id?: string;
+    stage1Format?: StageFormat;
+  }
+) {
+  const [{ data: tRow, error: tFetchErr }, { data: mRows, error: mFetchErr }] =
+    await Promise.all([
+      supabase.from('tournaments').select('status').eq('id', tournamentId).single(),
+      supabase.from('matches').select('status').eq('tournament_id', tournamentId),
+    ]);
+
+  if (tFetchErr || !tRow) {
+    throw new Error(tFetchErr?.message || 'Турнир не найден / Tournament not found');
+  }
+  if (mFetchErr) throw new Error(mFetchErr.message);
+
+  const perms = getTournamentLifecyclePermissions(
+    (tRow as { status: TournamentStatus }).status,
+    (mRows as Array<Pick<Match, 'status'>>) || []
+  );
+
+  if (!perms.canEditMetadata) {
+    throw new Error(
+      'Нельзя редактировать завершённый турнир / Completed tournaments cannot be edited'
+    );
+  }
+
+  const payload: Record<string, unknown> = {
+    title: updates.title.trim(),
+    description: updates.description?.trim() || null,
+    event_date: updates.event_date,
+  };
+
+  if (perms.canEditStructure) {
+    if (updates.type !== undefined) payload.type = updates.type;
+    if (updates.best_of !== undefined) payload.best_of = updates.best_of;
+    if (updates.is_rated !== undefined) payload.is_rated = updates.is_rated;
+  }
+
+  const { error: updErr } = await supabase
+    .from('tournaments')
+    .update(payload)
+    .eq('id', tournamentId);
+  if (updErr) throw new Error(updErr.message);
+
+  if (perms.canEditStructure && updates.stage1Id && updates.stage1Format) {
+    const { error: sErr } = await supabase
+      .from('tournament_stages')
+      .update({ format: updates.stage1Format })
+      .eq('id', updates.stage1Id);
+    if (sErr) throw new Error(sErr.message);
+  }
+}
+
+export async function deleteUnstartedTournament(tournamentId: string) {
+  const [{ data: tRow, error: tFetchErr }, { data: mRows, error: mFetchErr }] =
+    await Promise.all([
+      supabase.from('tournaments').select('status').eq('id', tournamentId).single(),
+      supabase.from('matches').select('status').eq('tournament_id', tournamentId),
+    ]);
+
+  if (tFetchErr || !tRow) {
+    throw new Error(tFetchErr?.message || 'Турнир не найден / Tournament not found');
+  }
+  if (mFetchErr) throw new Error(mFetchErr.message);
+
+  const perms = getTournamentLifecyclePermissions(
+    (tRow as { status: TournamentStatus }).status,
+    (mRows as Array<Pick<Match, 'status'>>) || []
+  );
+
+  if (!perms.canDelete) {
+    throw new Error(
+      'Удалять можно только турниры, которые ещё не начались и не имеют сыгранных матчей / Only unstarted tournaments with no played matches can be deleted'
+    );
+  }
+
+  // Delete dependent rows explicitly in safe FK order
+  const { error: mDelErr } = await supabase
+    .from('matches')
+    .delete()
+    .eq('tournament_id', tournamentId);
+  if (mDelErr) throw new Error(mDelErr.message);
+
+  const { error: sDelErr } = await supabase
+    .from('tournament_stages')
+    .delete()
+    .eq('tournament_id', tournamentId);
+  if (sDelErr) throw new Error(sDelErr.message);
+
+  const { error: eDelErr } = await supabase
+    .from('tournament_entries')
+    .delete()
+    .eq('tournament_id', tournamentId);
+  if (eDelErr) throw new Error(eDelErr.message);
+
+  const { error: tDelErr } = await supabase
+    .from('tournaments')
+    .delete()
+    .eq('id', tournamentId);
+  if (tDelErr) throw new Error(tDelErr.message);
 }

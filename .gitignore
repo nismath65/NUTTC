@@ -10,8 +10,13 @@
 .turbo/
 .vercel
 
-# Test & Coverage Output
+# Test & Coverage Output (keep test files out of GitHub)
 /coverage/
+/tests/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
 
 # TypeScript Cache
 *.tsbuildinfo
